@@ -21,8 +21,6 @@ struct sentence{
 	long endSample;
 }
 
-//https://gist.github.com/armornick/3447121
-//float buf [PLAY_SAMPLES];
 float** pcmData=NULL;
 long pcmPlayPos=0;
 long totalSamples;
@@ -32,6 +30,8 @@ uint32_t audioTimeReference;
 uint32_t audioTimeOther;
 
 pthread_mutex_t audioPosLock;
+
+nList* timings;
 
 void unpauseMusic(){
     	audioTimeReference=SDL_GetTicks();
@@ -50,19 +50,6 @@ void my_audio_callback(void *userdata, Uint8 *stream, int len) {
 	}
     
 	SF_INFO* _passedInfo = userdata;
-	//while ((readcount = sf_readf_float (infile, buf, frames)) > 0)
-	//{
-	//	for (k = 0; k < readcount; k++) // read wave
-	//	{	for (m = 0; m < _audioInfo.channels; m++){
-	//			//if (full_precision)
-	//			//	
-	//			//else
-	//			//	fprintf (outfile, " % 12.10f", buf [k * channels + m]);
-	//			//fprintf (outfile, "\n");
-	//		}
-	//	}
-	//}
-	//readcount = sf_readf_float (userdata, buf, frames);
 	int _possibleWriteSamples = (len/sizeof(float))/2;
 	int _shouldWriteSamples;
 	if (pcmPlayPos+_possibleWriteSamples>totalSamples){
@@ -83,17 +70,6 @@ void my_audio_callback(void *userdata, Uint8 *stream, int len) {
 	if (_shouldWriteSamples!=_possibleWriteSamples){
 		memset(&(stream[_shouldWriteSamples]),0,_possibleWriteSamples-_shouldWriteSamples);
 	}
-	//SDL_memcpy (stream, pcmData[pcmPlayPos], PLAY_SAMPLES*sizeof(float));
-	//pcmPlayPos+=PLAY_SAMPLES;
-	
-
-	//SDL_MixAudio(stream, buf, readcount*sizeof(float), SDL_MIX_MAXVOLUME);
-
-	//if (audio_len ==0)
-	//	return;
-	//
-	//len = ( len > audio_len ? audio_len : len );
-	////SDL_memcpy (stream, audio_pos, len); 					// simply copy from one buffer into the other
 	//SDL_MixAudio(stream, audio_pos, len, SDL_MIX_MAXVOLUME);// mix from one buffer into another
 
 	pthread_mutex_unlock(&audioPosLock);
@@ -116,6 +92,11 @@ void seekAudioMilli(int _numMilliseconds){
 }
 long getCurrentSample(){
     return ((audioTimeOther+(SDL_GetTicks()-audioTimeReference))/(double)1000)*sampleRate;
+}
+
+nList* findSentences(){
+	nList* _ret;
+	_ret = newnList();
 }
 
 int main (int argc, char * argv []){
@@ -188,15 +169,6 @@ int main (int argc, char * argv []){
 		return 1;
 	}
 
-
-
-
-
-
-
-
-
-
 	/*
 
 	unpauseMusic();
@@ -227,22 +199,6 @@ int main (int argc, char * argv []){
 		SDL_Delay(1);
 	}
 	*/
-
-	//float buf [PLAY_SAMPLES];
-	//sf_count_t frames;
-	//int k, m, readcount;
-	//frames = PLAY_SAMPLES / _audioInfo.channels;
-	//while ((readcount = sf_readf_float (infile, buf, frames)) > 0)
-	//{	for (k = 0; k < readcount; k++) // read wave
-	//	{	for (m = 0; m < _audioInfo.channels; m++){
-	//			//if (full_precision)
-	//			//	
-	//			//else
-	//			//	fprintf (outfile, " % 12.10f", buf [k * channels + m]);
-	//			//fprintf (outfile, "\n");
-	//		}
-	//	}
-	//}
 
 	// whatever the opposite of init is
 	pthread_mutex_destroy(&audioPosLock);
