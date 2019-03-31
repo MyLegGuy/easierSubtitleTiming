@@ -5,10 +5,6 @@
 	W - Forward
 	S - stitch - Combine this and next one
 	A - stitch this and previous one
-
-
-	TODO - Need undo
-		Do this using a stack with two pieces of data on it. An undo function and an undo data variable to be passed to the function. Also, maybe we can make it pass the currentSample (at the time you used the command) by default.
 */
 
 #include <stdio.h>
@@ -24,6 +20,7 @@
 #include <SDL2/SDL_image.h>
 
 #include "goodLinkedList.h"
+#include "stack.h"
 
 #define PLAY_SAMPLES  4096
 #define READBLOCKSIZE 8192
@@ -44,12 +41,27 @@
 #define BACKGROUNDCOLOR MAKERGB(0,0,0,255)
 #define MODBACKGROUNDCOLOR MAKERGB(0,0,57,255)
 
+typedef void(*keyFunc)();
+typedef void(*undoFunc)(long _currentSample, void* _data);
+struct undo{
+	char* message;
+	undoFunc doThis;
+	void* passData;
+	long atSample;
+};
+struct pointerHolder3{
+	void* item1;
+	void* item2;
+	void* item3;
+};
+struct longHolder2{
+	long item1;
+	long item2;
+};
 struct sentence {
 	long startSample;
 	long endSample;
 };
-typedef void(*keyFunc)();
-typedef void(*undoFunc)(long _currentSample, void* _data);
 
 SDL_Window* mainWindow;
 SDL_Renderer* mainWindowRenderer;
@@ -66,11 +78,35 @@ uint32_t audioTimeOther;
 pthread_mutex_t audioPosLock;
 
 nList* timings;
+nStack* undoStack;
 
 int totalKeysBound=0;
 SDL_Keycode* boundKeys;
 char* boundKeyModStatus;
 keyFunc* boundFuncs;
+char* lastAction=NULL;
+
+struct longHolder2* newLongHolder2(long item1, long item2){
+	struct longHolder2* _ret = malloc(sizeof(struct longHolder2));
+	_ret->item1=item1;
+	_ret->item2=item2;
+	return _ret;
+}
+struct pointerHolder3* newGenericHolder3(void* item1, void* item2, void* item3){
+	struct pointerHolder3* _ret = malloc(sizeof(struct pointerHolder3));
+	_ret->item1=item1;
+	_ret->item2=item2;
+	_ret->item3=item3;
+	return _ret;
+}
+struct undo* makeUndoEntry(char* _message, undoFunc _action, void *_data, long _sampleTime){
+	struct undo* _ret = malloc(sizeof(struct undo));
+	_ret->message=_message;
+	_ret->doThis=_action;
+	_ret->passData=_data;
+	_ret->atSample = _sampleTime;
+	return _ret;
+}
 
 void setDrawColor(uint32_t _passedColor) {
 	SDL_SetRenderDrawColor(mainWindowRenderer,(_passedColor) & 0xFF, (_passedColor>>8) & 0xFF, (_passedColor>>16) & 0xFF, (_passedColor>>24) & 0xFF);
@@ -207,7 +243,9 @@ nList* findSentences() {
 }
 
 void setLastAction(char* _actionName) {
-	//
+	free(lastAction);
+	lastAction = strdup(_actionName);
+	printf("%s\n",lastAction);
 }
 
 nList* getCurrentSentence(long _currentSample){
@@ -261,8 +299,26 @@ void bindKey(SDL_Keycode _bindThis, keyFunc _bindFunc, char _modStatus){
 }
 
 /////////////////////////////
+
+// passed is longHolder2 with item1 being the end of the the first one and item2 being the start of the second one
+void undoStitch(long _currentSample, void* _passedData){
+	nList* _currentSentence = getCurrentSentence(_currentSample);
+	nList* _undoneDeleted = malloc(sizeof(nList));
+	_undoneDeleted->data = malloc(sizeof(struct sentence));
+	CASTDATA(_undoneDeleted)->startSample = ((struct longHolder2*)(_passedData))->item2;
+	CASTDATA(_undoneDeleted)->endSample = CASTDATA(_currentSentence)->endSample;
+	CASTDATA(_currentSentence)->endSample = ((struct longHolder2*)(_passedData))->item1;
+	_undoneDeleted->nextEntry = _currentSentence->nextEntry;
+	_currentSentence->nextEntry = _undoneDeleted;
+}
 void keyStitchForward(){
-	nList* _currentSentence = getCurrentSentence(getCurrentSample());
+	long _currentSample = getCurrentSample();
+	nList* _currentSentence = getCurrentSentence(_currentSample);
+
+	// Undo data
+	long _oldEnd = CASTDATA(_currentSentence)->endSample;
+	long _oldStart = CASTDATA(_currentSentence->nextEntry)->startSample;
+
 	CASTDATA(_currentSentence)->endSample=CASTDATA(_currentSentence->nextEntry)->endSample;
 	nList* _tempHold = _currentSentence->nextEntry->nextEntry;
 	free(_currentSentence->nextEntry->data);
@@ -270,6 +326,25 @@ void keyStitchForward(){
 	_currentSentence->nextEntry=_tempHold;
 
 	setLastAction("Stitch forward");
+	addStack(&undoStack,makeUndoEntry("stitch forward",undoStitch,newLongHolder2(_oldEnd,_oldStart),_currentSample));
+}
+void keyUndo(){
+	if (stackEmpty(undoStack)){
+		setLastAction("Nothing to undo.");
+	}else{
+		struct undo* _undoAction = popStack(&undoStack);
+		_undoAction->doThis(_undoAction->atSample,_undoAction->passData);
+	
+		char* _stitchedMessage = malloc(strlen(_undoAction->message)+strlen("Undo: \"\"")+1);
+		strcpy(_stitchedMessage,"Undo: \"");
+		strcat(_stitchedMessage,_undoAction->message);
+		strcat(_stitchedMessage,"\"");
+		setLastAction(_stitchedMessage);
+		free(_stitchedMessage);
+	
+		free(_undoAction->passData);
+		free(_undoAction);
+	}
 }
 /////////////////////////////
 
@@ -283,11 +358,11 @@ char init() {
 
 	//https://wiki.libsdl.org/SDL_Keycode
 	bindKey(SDLK_s,keyStitchForward,0);
+	bindKey(SDLK_F1,keyUndo,0);
 
 	setLastAction("Welcome");
 	return 0;
 }
-
 
 int main (int argc, char * argv []) {
 	// init
@@ -386,7 +461,6 @@ int main (int argc, char * argv []) {
 	char _modDown=0;
 	char _running=1;
 	while(_running) {
-
 		SDL_Event e;
 		while( SDL_PollEvent( &e ) != 0 ) {
 			if( e.type == SDL_QUIT ) {
@@ -397,13 +471,13 @@ int main (int argc, char * argv []) {
 				}else{
 					int i;
 					for (i=0;i<totalKeysBound;++i){
-						if (e.key.keysym.sym==boundKeys[i]){
+						if (e.key.keysym.sym==boundKeys[i] && boundKeyModStatus[i]==_modDown){
 							boundFuncs[i]();
 							break;
 						}
 					}
 					if (i==totalKeysBound){
-						printf("invalid key %s\n",SDL_GetKeyName(e.key.keysym.sym));
+						printf("invalid key %s, mod:%d\n",SDL_GetKeyName(e.key.keysym.sym),_modDown);
 					}
 				}
 			}else if (e.type==SDL_KEYUP){
