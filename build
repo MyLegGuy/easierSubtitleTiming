@@ -1,1 +1,1 @@
-gcc -g -Wall main.c goodLinkedList.c stack.c -lsndfile -lSDL2 -lncurses
+gcc -g -Wall main.c goodLinkedList.c stack.c -lsndfile -lSDL2 -lncurses -lm

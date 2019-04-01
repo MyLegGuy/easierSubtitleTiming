@@ -32,14 +32,19 @@
 #define REDRAWTIME 40
 #define TIMEPERPIXEL 25
 
-#define MAKERGB(r,g,b,a) ((((a)&0xFF)<<24) | (((b)&0xFF)<<16) | (((g)&0xFF)<<8) | (((r)&0xFF)<<0))
-#define BARHEIGHT 20
+#define MAKERGBA(r,g,b,a) ((((a)&0xFF)<<24) | (((b)&0xFF)<<16) | (((g)&0xFF)<<8) | (((r)&0xFF)<<0))
+#define BARHEIGHT 50
 #define CASTDATA(a) ((struct sentence*)(a->data))
 #define MODKEY SDLK_LSHIFT
+#define INDICATORWIDTH 18
 
 // colors
-#define BACKGROUNDCOLOR MAKERGB(0,0,0,255)
-#define MODBACKGROUNDCOLOR MAKERGB(0,0,57,255)
+#define BACKGROUNDCOLOR MAKERGBA(0,0,0,255)
+#define MODBACKGROUNDCOLOR MAKERGBA(0,0,57,255)
+#define MARKERCOLOR MAKERGBA(0,255,0,255)
+#define COLORINACTIVESENTENCE MAKERGBA(255,255,255,255)
+#define COLORCURRENTSENTENCE MAKERGBA(255,0,0,255)
+#define COLORNOSENTENCE BACKGROUNDCOLOR
 
 typedef void(*keyFunc)();
 typedef void(*undoFunc)(long _currentSample, void* _data);
@@ -259,12 +264,17 @@ nList* getCurrentSentence(long _currentSample){
 	return _currentEntry;
 }
 
-void drawSentences() {
-	long _currentSample = getCurrentSample();
-	nList* _currentEntry = getCurrentSentence(_currentSample);
+void drawSentences(int _maxWidth){
 	int _currentX=0;
-	int _maxWidth;
-	SDL_GetWindowSize(mainWindow,&_maxWidth,NULL);
+	long _currentSample = getCurrentSample();
+	long _highlightSample = _currentSample; // Holder
+	// Center
+	_currentSample-=timeToSamples((_maxWidth/2)*TIMEPERPIXEL);
+	if (_currentSample<0){
+		_currentX = _maxWidth/2 - samplesToTime(_highlightSample)/TIMEPERPIXEL;
+		_currentSample=0;
+	}
+	nList* _currentEntry = getCurrentSentence(_currentSample);
 	while(_currentX<_maxWidth) {
 		struct sentence* _currentSentence = _currentEntry->data;
 		if (_currentSample<_currentSentence->endSample) {
@@ -272,17 +282,24 @@ void drawSentences() {
 			uint32_t _drawColor;
 			if (_currentSample<_currentSentence->startSample) { // Draw blank space
 				_lenSamples = _currentSentence->startSample-_currentSample;
-				_drawColor = MAKERGB(0,0,0,255);
+				_drawColor = COLORNOSENTENCE;
 			} else { // Draw sentence
 				_lenSamples = _currentSentence->endSample-_currentSample;
-				_drawColor = MAKERGB(255,255,255,255);
+				if (_highlightSample>=_currentSentence->startSample && _highlightSample<_currentSentence->endSample){
+					_drawColor = COLORCURRENTSENTENCE;
+				}else{
+					_drawColor = COLORINACTIVESENTENCE;
+				}
 			}
-			int _drawWidth = samplesToTime(_lenSamples)/TIMEPERPIXEL;
+			int _drawWidth = ceil(samplesToTime(_lenSamples)/(double)TIMEPERPIXEL);
 			drawRectangle(_currentX,0,_drawWidth,BARHEIGHT,_drawColor);
-			_currentSample+=_lenSamples;
+			_currentSample+=timeToSamples(_drawWidth*TIMEPERPIXEL); // this will round samples to the nearest multiple of TIMEPERPIXEL
 			_currentX+=_drawWidth;
 		} else {
 			_currentEntry=_currentEntry->nextEntry;
+			if (_currentEntry==NULL){
+				break;
+			}
 		}
 	}
 }
@@ -492,12 +509,18 @@ int main (int argc, char * argv []) {
 		}else{
 			setDrawColor(BACKGROUNDCOLOR);
 		}
+
+		int _maxWidth;
+		SDL_GetWindowSize(mainWindow,&_maxWidth,NULL);
 		SDL_RenderClear(mainWindowRenderer);
-		drawSentences();
+		drawSentences(_maxWidth);
+
+		// Draw indicator traingle
+		int _triangleWidth;
+		for (_triangleWidth=1;_triangleWidth<=INDICATORWIDTH;_triangleWidth+=2){
+			drawRectangle(_maxWidth/2-_triangleWidth/2,BARHEIGHT+(_triangleWidth/2),_triangleWidth,1,MARKERCOLOR);
+		}
 		SDL_RenderPresent(mainWindowRenderer);
-
-
-		drawSentences();
 	}
 
 	/*
