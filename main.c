@@ -14,13 +14,19 @@
 #include <ctype.h>
 #include <float.h>
 #include <pthread.h>
+#include <unistd.h>
 
 #include <sndfile.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
+#include <SDL_FontCache.h>
 
 #include "goodLinkedList.h"
 #include "stack.h"
+
+// when looking for default font. Must end in a slash
+#define DEFAULTFONTDIR "/usr/share/fonts/TTF/"
+#define GETFONTCOMMAND "fc-match"
 
 #define PLAY_SAMPLES  4096
 #define READBLOCKSIZE 8192
@@ -31,12 +37,14 @@
 #define MIN_SENTENCE_TIME SENTENCE_SPACE_TIME
 #define REDRAWTIME 40
 #define TIMEPERPIXEL 25
+#define INDENTPIXELS 32
 
 #define MAKERGBA(r,g,b,a) ((((a)&0xFF)<<24) | (((b)&0xFF)<<16) | (((g)&0xFF)<<8) | (((r)&0xFF)<<0))
-#define BARHEIGHT 50
+#define BARHEIGHT 32
 #define CASTDATA(a) ((struct sentence*)(a->data))
 #define MODKEY SDLK_LSHIFT
 #define INDICATORWIDTH 18
+#define FONTSIZE 20
 
 // colors
 #define BACKGROUNDCOLOR MAKERGBA(0,0,0,255)
@@ -45,6 +53,7 @@
 #define COLORINACTIVESENTENCE MAKERGBA(255,255,255,255)
 #define COLORCURRENTSENTENCE MAKERGBA(255,0,0,255)
 #define COLORNOSENTENCE BACKGROUNDCOLOR
+#define ACTIVESUBCOLOR FC_MakeColor(0,255,0,255)
 
 typedef void(*keyFunc)();
 typedef void(*undoFunc)(long _currentSample, void* _data);
@@ -81,9 +90,15 @@ uint32_t audioTimeReference;
 uint32_t audioTimeOther;
 
 pthread_mutex_t audioPosLock;
+FC_Font* goodFont;
+int fontHeight;
 
 nList* timings;
 nStack* undoStack;
+
+int numRawSubs=0;
+char** rawSubs;
+char* rawSkipped;
 
 int totalKeysBound=0;
 SDL_Keycode* boundKeys;
@@ -91,6 +106,17 @@ char* boundKeyModStatus;
 keyFunc* boundFuncs;
 char* lastAction=NULL;
 
+long roundMultiple(long _roundThis, int _multipleOf){
+	int _remainder = _roundThis%_multipleOf;
+	if (_remainder!=0){
+		return _roundThis-_remainder;
+	}else{
+		return _roundThis;
+	}
+}
+char fileExists(const char* _passedPath){
+	return (access(_passedPath, R_OK)!=-1);
+}
 struct longHolder2* newLongHolder2(long item1, long item2){
 	struct longHolder2* _ret = malloc(sizeof(struct longHolder2));
 	_ret->item1=item1;
@@ -253,20 +279,23 @@ void setLastAction(char* _actionName) {
 	printf("%s\n",lastAction);
 }
 
-nList* getCurrentSentence(long _currentSample){
+nList* getCurrentSentence(long _currentSample, int* _retIndex){
 	nList* _currentEntry = timings;
-	for (;_currentEntry->nextEntry!=NULL;){
+	int i;
+	for (i=0;_currentEntry->nextEntry!=NULL;++i){
 		if (CASTDATA(_currentEntry->nextEntry)->startSample>_currentSample){ // If we're not at the next sample yet
 			break;
 		}
 		_currentEntry=_currentEntry->nextEntry;
 	}
+	if (_retIndex!=NULL){
+		*_retIndex=i;
+	}
 	return _currentEntry;
 }
 
-void drawSentences(int _maxWidth){
+void drawSentences(int _maxWidth, long _currentSample){
 	int _currentX=0;
-	long _currentSample = getCurrentSample();
 	long _highlightSample = _currentSample; // Holder
 	// Center
 	_currentSample-=timeToSamples((_maxWidth/2)*TIMEPERPIXEL);
@@ -274,7 +303,7 @@ void drawSentences(int _maxWidth){
 		_currentX = _maxWidth/2 - samplesToTime(_highlightSample)/TIMEPERPIXEL;
 		_currentSample=0;
 	}
-	nList* _currentEntry = getCurrentSentence(_currentSample);
+	nList* _currentEntry = getCurrentSentence(_currentSample,NULL);
 	while(_currentX<_maxWidth) {
 		struct sentence* _currentSentence = _currentEntry->data;
 		if (_currentSample<_currentSentence->endSample) {
@@ -315,11 +344,25 @@ void bindKey(SDL_Keycode _bindThis, keyFunc _bindFunc, char _modStatus){
 	boundKeyModStatus[totalKeysBound-1] = _modStatus;
 }
 
+void removeNewline(char* _toRemove){
+	int _cachedStrlen = strlen(_toRemove);
+	if (_cachedStrlen==0){
+		return;
+	}
+	if (_toRemove[_cachedStrlen-1]==0x0A){ // Last char is UNIX newline
+		if (_cachedStrlen>=2 && _toRemove[_cachedStrlen-2]==0x0D){ // If it's a Windows newline
+			_toRemove[_cachedStrlen-2]='\0';
+		}else{ // Well, it's at very least a UNIX newline
+			_toRemove[_cachedStrlen-1]='\0';
+		}
+	}
+}
+
 /////////////////////////////
 
 // passed is longHolder2 with item1 being the end of the the first one and item2 being the start of the second one
 void undoStitch(long _currentSample, void* _passedData){
-	nList* _currentSentence = getCurrentSentence(_currentSample);
+	nList* _currentSentence = getCurrentSentence(_currentSample,NULL);
 	nList* _undoneDeleted = malloc(sizeof(nList));
 	_undoneDeleted->data = malloc(sizeof(struct sentence));
 	CASTDATA(_undoneDeleted)->startSample = ((struct longHolder2*)(_passedData))->item2;
@@ -330,7 +373,7 @@ void undoStitch(long _currentSample, void* _passedData){
 }
 void keyStitchForward(){
 	long _currentSample = getCurrentSample();
-	nList* _currentSentence = getCurrentSentence(_currentSample);
+	nList* _currentSentence = getCurrentSentence(_currentSample,NULL);
 
 	// Undo data
 	long _oldEnd = CASTDATA(_currentSentence)->endSample;
@@ -365,13 +408,67 @@ void keyUndo(){
 }
 /////////////////////////////
 
-char init() {
+char* getFontFilename(){
+	FILE* _outStream = popen(GETFONTCOMMAND,"r");
+	if (_outStream==NULL){
+		printf("popen %s failed\n",GETFONTCOMMAND);
+		return NULL;
+	}
+	char _commandOut[256];
+	_commandOut[fread(_commandOut,1,sizeof(_commandOut)-1,_outStream)]='\0';
+	fclose(_outStream);
+	char* _endHere = strchr(_commandOut,':');
+	if (_endHere==NULL){
+		printf("bad output from %s: %s\n",GETFONTCOMMAND,_commandOut);
+		return NULL;
+	}
+	_endHere[0]='\0';
+	char* _fullFilename = malloc(strlen(DEFAULTFONTDIR)+strlen(_commandOut)+1);
+	strcpy(_fullFilename,DEFAULTFONTDIR);
+	strcat(_fullFilename,_commandOut);
+	if (!fileExists(_fullFilename)){
+		printf("font does not exist: %s\n",_fullFilename);
+		free(_fullFilename);
+		return NULL;
+	}else{
+		return _fullFilename;
+	}
+}
+
+void loadRawsubs(char* filename){
+	FILE* fp = fopen(filename,"rb");
+	size_t _lineSize=0;
+	char* _lastLine=NULL;
+	numRawSubs=0;
+	while (getline(&_lastLine,&_lineSize,fp)!=-1){
+		_lineSize=0;
+		numRawSubs++;
+		rawSubs = realloc(rawSubs,sizeof(char*)*(numRawSubs));
+		removeNewline(_lastLine);
+		rawSubs[numRawSubs-1]=_lastLine;
+		_lastLine=NULL;
+	}
+	fclose(fp);
+	rawSkipped = calloc(1,sizeof(char)*numRawSubs);
+}
+
+char init(int argc, char** argv) {
 	if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO) < 0) {
 		printf("fail open sdl");
 		return 1;
 	}
 	mainWindow = SDL_CreateWindow( "easierTiming", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 640, 480, SDL_WINDOW_SHOWN); //SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
 	mainWindowRenderer = SDL_CreateRenderer( mainWindow, -1, SDL_RENDERER_PRESENTVSYNC);
+
+	goodFont = FC_CreateFont();
+	char* _fontFilename = getFontFilename();
+	if (_fontFilename==NULL){
+		printf("Could not find font filename. Please pass one using the --font option. See --help for more info.\n");
+		return 1;
+	}
+	FC_LoadFont(goodFont, mainWindowRenderer, _fontFilename, FONTSIZE, FC_MakeColor(255,255,255,255), TTF_STYLE_NORMAL);
+	free(_fontFilename);
+	fontHeight = FC_GetLineHeight(goodFont);
 
 	//https://wiki.libsdl.org/SDL_Keycode
 	bindKey(SDLK_s,keyStitchForward,0);
@@ -381,9 +478,9 @@ char init() {
 	return 0;
 }
 
-int main (int argc, char * argv []) {
+int main (int argc, char** argv) {
 	// init
-	if (init()) {
+	if (init(argc,argv)) {
 		return 1;
 	}
 	if (pthread_mutex_init(&audioPosLock,NULL)!=0) {
@@ -391,6 +488,7 @@ int main (int argc, char * argv []) {
 		return 1;
 	}
 
+	loadRawsubs("./1.fakesubs");
 	// init audio
 	char* infilename = "./1.ogg";
 	SNDFILE* infile = NULL;
@@ -511,15 +609,39 @@ int main (int argc, char * argv []) {
 		}
 
 		int _maxWidth;
-		SDL_GetWindowSize(mainWindow,&_maxWidth,NULL);
+		int _maxHeight;
+		SDL_GetWindowSize(mainWindow,&_maxWidth,&_maxHeight);
 		SDL_RenderClear(mainWindowRenderer);
-		drawSentences(_maxWidth);
+
+		long _currentSample = getCurrentSample();
+		drawSentences(_maxWidth,_currentSample);
 
 		// Draw indicator traingle
 		int _triangleWidth;
 		for (_triangleWidth=1;_triangleWidth<=INDICATORWIDTH;_triangleWidth+=2){
 			drawRectangle(_maxWidth/2-_triangleWidth/2,BARHEIGHT+(_triangleWidth/2),_triangleWidth,1,MARKERCOLOR);
 		}
+
+		// Draw subs
+		int _currentY = BARHEIGHT+(INDICATORWIDTH/2);
+		int _currentIndex;
+		struct sentence* _currentSentence = getCurrentSentence(_currentSample,&_currentIndex)->data;
+		int i=_currentIndex;
+		// Center
+		i-=(_maxHeight-_currentY)/2/fontHeight;
+		if (i<0){
+			i=0;
+			_currentY=roundMultiple((_maxHeight-_currentY)/2,fontHeight)+_currentY-_currentIndex*fontHeight;
+		}
+		for (;_currentY<_maxHeight-fontHeight && i<numRawSubs;++i){
+			if (i==_currentIndex){
+				FC_DrawColor(goodFont, mainWindowRenderer, (_currentSample<=_currentSentence->endSample ? INDENTPIXELS : 0), _currentY, ACTIVESUBCOLOR, rawSubs[i]);
+			}else{
+				FC_Draw(goodFont, mainWindowRenderer, 0, _currentY, rawSubs[i]);
+			}
+			_currentY+=fontHeight;
+		}
+
 		SDL_RenderPresent(mainWindowRenderer);
 	}
 
@@ -551,6 +673,7 @@ int main (int argc, char * argv []) {
 	*/
 
 	// whatever the opposite of init is
+	FC_FreeFont(goodFont);
 	pauseMusic();
 	pthread_mutex_destroy(&audioPosLock);
 
