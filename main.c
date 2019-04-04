@@ -61,7 +61,7 @@
 #define ACTIVESUBCOLOR FC_MakeColor(0,255,0,255)
 #define CROSSOUTCOLOR MAKERGBA(255,0,0,255) // The line that goes though skipped subs
 
-typedef void(*keyFunc)();
+typedef void(*keyFunc)(long _currentSample);
 typedef void(*undoFunc)(long _currentSample, void* _data);
 struct undo{
 	char* message;
@@ -434,22 +434,22 @@ void undoSkip(long _currentSample, void* _passedData){
 
 /////////////////////////////
 
-void keyStitchForward(){
-	nList* _currentSentence = getCurrentSentence(getCurrentSample(),NULL);
+void keyStitchForward(long _currentSample){
+	nList* _currentSentence = getCurrentSentence(_currentSample,NULL);
 	if (_currentSentence->nextEntry==NULL){
 		return;
 	}
 	lowStitchForwards(_currentSentence,"stitch forwards");
 }
-void keyStitchBackward(){
+void keyStitchBackward(long _currentSample){
 	int _currentIndex;
-	getCurrentSentence(getCurrentSample(),&_currentIndex);
+	getCurrentSentence(_currentSample,&_currentIndex);
 	if (_currentIndex==0){
 		return;
 	}
 	lowStitchForwards(getnList(timings,_currentIndex-1),"stitch backwards");
 }
-void keyUndo(){
+void keyUndo(long _currentSample){
 	if (stackEmpty(undoStack)){
 		setLastAction("Nothing to undo.");
 	}else{
@@ -470,38 +470,38 @@ void keyUndo(){
 		free(_undoAction);
 	}
 }
-void keyNormalSeekForward(){
+void keyNormalSeekForward(long _currentSample){
 	seekAudioMilli(NORMALSEEK);
 }
-void keyNormalSeekBack(){
+void keyNormalSeekBack(long _currentSample){
 	seekAudioMilli(NORMALSEEK*-1);
 }
-void keyMegaSeekForward(){
+void keyMegaSeekForward(long _currentSample){
 	seekAudioMilli(MEGASEEK);
 }
-void keyMegaSeekBack(){
+void keyMegaSeekBack(long _currentSample){
 	seekAudioMilli(MEGASEEK*-1);
 }
-void keySeekBackSentence(){
+void keySeekBackSentence(long _currentSample){
 	int _currentIndex;
-	getCurrentSentence(getCurrentSample(),&_currentIndex);
+	getCurrentSentence(_currentSample,&_currentIndex);
 	if (_currentIndex==0){
 		return;
 	}
 	seekAudioSamplesExact(CASTDATA(getnList(timings, _currentIndex-1))->startSample);
 }
-void keySeekForwardSentence(){
-	nList* _possibleNext = getCurrentSentence(getCurrentSample(),NULL)->nextEntry;
+void keySeekForwardSentence(long _currentSample){
+	nList* _possibleNext = getCurrentSentence(_currentSample,NULL)->nextEntry;
 	if (_possibleNext!=NULL){
 		seekAudioSamplesExact(CASTDATA(_possibleNext)->startSample);
 	}
 }
-void keySeekSentenceStart(){
-	seekAudioSamplesExact(CASTDATA(getCurrentSentence(getCurrentSample(),NULL))->startSample);
+void keySeekSentenceStart(long _currentSample){
+	seekAudioSamplesExact(CASTDATA(getCurrentSentence(_currentSample,NULL))->startSample);
 }
-void keySkip(){
+void keySkip(long _currentSample){
 	int _currentIndex;
-	getCurrentSentence(getCurrentSample(),&_currentIndex);
+	getCurrentSentence(_currentSample,&_currentIndex);
 	_currentIndex = correctSentenceIndex(_currentIndex);
 	rawSkipped[_currentIndex]=1;
 
@@ -514,6 +514,10 @@ void keySkip(){
 	*_dataPointer=_currentIndex;
 	addStack(&undoStack,makeUndoEntry(_messageBuff,undoSkip,_dataPointer,0,1));
 }
+void keyChop(long _currentSample){
+
+}
+
 /////////////////////////////
 
 char* getFontFilename(){
@@ -590,6 +594,7 @@ char init(int argc, char** argv) {
 	bindKey(SDLK_w,keySeekForwardSentence,0);
 	bindKey(SDLK_BACKQUOTE,keySeekSentenceStart,0); // `
 	bindKey(SDLK_d,keySkip,0);
+	bindKey(SDLK_c,keyChop,0);
 
 	setLastAction("Welcome");
 	return 0;
@@ -676,6 +681,8 @@ int main (int argc, char** argv) {
 	char _modDown=0;
 	char _running=1;
 	while(_running) {
+		long _currentSample = getCurrentSample();
+		
 		SDL_Event e;
 		while( SDL_PollEvent( &e ) != 0 ) {
 			if( e.type == SDL_QUIT ) {
@@ -687,7 +694,7 @@ int main (int argc, char** argv) {
 					int i;
 					for (i=0;i<totalKeysBound;++i){
 						if (e.key.keysym.sym==boundKeys[i] && boundKeyModStatus[i]==_modDown){
-							boundFuncs[i]();
+							boundFuncs[i](_currentSample);
 							break;
 						}
 					}
@@ -713,7 +720,7 @@ int main (int argc, char** argv) {
 		SDL_GetWindowSize(mainWindow,&_maxWidth,&_maxHeight);
 		SDL_RenderClear(mainWindowRenderer);
 
-		long _currentSample = getCurrentSample();
+		
 		drawSentences(_maxWidth,_currentSample);
 
 		// Draw indicator traingle
