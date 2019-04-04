@@ -28,6 +28,7 @@
 #define DEFAULTFONTDIR "/usr/share/fonts/TTF/"
 #define GETFONTCOMMAND "fc-match"
 
+#define MAKERGBA(r,g,b,a) ((((a)&0xFF)<<24) | (((b)&0xFF)<<16) | (((g)&0xFF)<<8) | (((r)&0xFF)<<0))
 #define PLAY_SAMPLES  4096
 #define READBLOCKSIZE 8192
 // in PCM float
@@ -36,15 +37,18 @@
 #define SENTENCE_SPACE_TIME 400
 #define MIN_SENTENCE_TIME SENTENCE_SPACE_TIME
 #define REDRAWTIME 40
-#define TIMEPERPIXEL 25
-#define INDENTPIXELS 32
+#define NORMALSEEK 1000
+#define MEGASEEK 3000
+#define MINISEEK 500
+#define REACTSEEK 400
 
-#define MAKERGBA(r,g,b,a) ((((a)&0xFF)<<24) | (((b)&0xFF)<<16) | (((g)&0xFF)<<8) | (((r)&0xFF)<<0))
 #define BARHEIGHT 32
 #define CASTDATA(a) ((struct sentence*)(a->data))
 #define MODKEY SDLK_LSHIFT
 #define INDICATORWIDTH 18
 #define FONTSIZE 20
+#define TIMEPERPIXEL 25
+#define INDENTPIXELS 32
 
 // colors
 #define BACKGROUNDCOLOR MAKERGBA(0,0,0,255)
@@ -86,6 +90,7 @@ long totalSamples;
 int sampleRate;
 int totalChannels;
 
+// Use these two together to find current sample
 uint32_t audioTimeReference;
 uint32_t audioTimeOther;
 
@@ -199,23 +204,36 @@ void my_audio_callback(void *userdata, Uint8 *stream, int len) {
 double samplesToTime(long _passedSamples) {
 	return (_passedSamples/(double)sampleRate)*1000;
 }
-void seekAudioSamples(int _numSamples) {
-	pthread_mutex_lock(&audioPosLock);
-	pcmPlayPos+=_numSamples;
+void lowSeekAudioSamplesExact(long _samplePosition, char _startLock){
+	if (_startLock){
+		pthread_mutex_lock(&audioPosLock);
+	}
+	
+	pcmPlayPos=_samplePosition;
 	if (pcmPlayPos<0) {
 		pcmPlayPos=0;
 	} else if (pcmPlayPos+PLAY_SAMPLES>totalSamples) {
 		pcmPlayPos=totalSamples-PLAY_SAMPLES;
 	}
 	audioTimeOther=samplesToTime(pcmPlayPos);
+	
 	audioTimeReference=SDL_GetTicks();
 	pthread_mutex_unlock(&audioPosLock);
+}
+void seekAudioSamplesExact(long _samplePosition){
+	lowSeekAudioSamplesExact(_samplePosition,1);
+}
+void seekAudioSamples(int _numSamples) {
+	pthread_mutex_lock(&audioPosLock);
+	lowSeekAudioSamplesExact(pcmPlayPos+_numSamples,0);
 }
 void seekAudioMilli(int _numMilliseconds) {
 	seekAudioSamples((_numMilliseconds/(double)1000)*sampleRate);
 }
 long getCurrentSample() {
-	return ((audioTimeOther+(SDL_GetTicks()-audioTimeReference))/(double)1000)*sampleRate;
+	//long _fake = ((audioTimeOther+(SDL_GetTicks()-audioTimeReference))/(double)1000)*sampleRate;
+	//printf("oh  apparent:%ld actual:%ld actual-fake:%ld\n",_fake,pcmPlayPos,pcmPlayPos-_fake);
+	return (((SDL_GetTicks()-audioTimeReference)+audioTimeOther)/(double)1000)*sampleRate;
 }
 double getAvgPcm(long _sampleNumber) {
 	double _avg=0;
@@ -406,6 +424,35 @@ void keyUndo(){
 		free(_undoAction);
 	}
 }
+void keyNormalSeekForward(){
+	seekAudioMilli(NORMALSEEK);
+}
+void keyNormalSeekBack(){
+	seekAudioMilli(NORMALSEEK*-1);
+}
+void keyMegaSeekForward(){
+	seekAudioMilli(MEGASEEK);
+}
+void keyMegaSeekBack(){
+	seekAudioMilli(MEGASEEK*-1);
+}
+void keySeekBackSentence(){
+	int _currentIndex;
+	getCurrentSentence(getCurrentSample(),&_currentIndex);
+	seekAudioSamplesExact(CASTDATA(getnList(timings, _currentIndex-1))->startSample);
+
+	int i;
+	printf("tried to go to %ld; at %ld; at %ld; try: %ld\n",CASTDATA(getnList(timings, _currentIndex-1))->startSample,getCurrentSample(),pcmPlayPos,timeToSamples(samplesToTime(CASTDATA(getnList(timings, _currentIndex-1))->startSample)));
+	getCurrentSentence(getCurrentSample(),&i);
+	printf("at sentence %d\n",i);
+
+}
+void keySeekForwardSentence(){
+	nList* _possibleNext = getCurrentSentence(getCurrentSample(),NULL)->nextEntry;
+	if (_possibleNext!=NULL){
+		seekAudioSamplesExact(CASTDATA(_possibleNext)->startSample);
+	}
+}
 /////////////////////////////
 
 char* getFontFilename(){
@@ -458,7 +505,7 @@ char init(int argc, char** argv) {
 		return 1;
 	}
 	mainWindow = SDL_CreateWindow( "easierTiming", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 640, 480, SDL_WINDOW_SHOWN); //SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
-	mainWindowRenderer = SDL_CreateRenderer( mainWindow, -1, SDL_RENDERER_PRESENTVSYNC);
+	mainWindowRenderer = SDL_CreateRenderer( mainWindow, -1, SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_ACCELERATED);
 
 	goodFont = FC_CreateFont();
 	char* _fontFilename = getFontFilename();
@@ -472,7 +519,13 @@ char init(int argc, char** argv) {
 
 	//https://wiki.libsdl.org/SDL_Keycode
 	bindKey(SDLK_s,keyStitchForward,0);
-	bindKey(SDLK_F1,keyUndo,0);
+	bindKey(SDLK_e,keyUndo,0);
+	bindKey(SDLK_1,keyNormalSeekBack,0);
+	bindKey(SDLK_2,keyNormalSeekForward,0);
+	bindKey(SDLK_1,keyMegaSeekBack,1);
+	bindKey(SDLK_2,keyMegaSeekForward,1);
+	bindKey(SDLK_q,keySeekBackSentence,0);
+	bindKey(SDLK_w,keySeekForwardSentence,0);
 
 	setLastAction("Welcome");
 	return 0;
