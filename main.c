@@ -68,6 +68,7 @@ struct undo{
 	undoFunc doThis;
 	void* passData;
 	long atSample;
+	char freeMessage;
 };
 struct pointerHolder3{
 	void* item1;
@@ -140,12 +141,13 @@ struct pointerHolder3* newGenericHolder3(void* item1, void* item2, void* item3){
 	_ret->item3=item3;
 	return _ret;
 }
-struct undo* makeUndoEntry(char* _message, undoFunc _action, void *_data, long _sampleTime){
+struct undo* makeUndoEntry(char* _message, undoFunc _action, void *_data, long _sampleTime, char _freeMessage){
 	struct undo* _ret = malloc(sizeof(struct undo));
 	_ret->message=_message;
 	_ret->doThis=_action;
 	_ret->passData=_data;
 	_ret->atSample = _sampleTime;
+	_ret->freeMessage=_freeMessage;
 	return _ret;
 }
 
@@ -392,7 +394,7 @@ void lowStitchForwards(nList* _startHere, char* _message){
 	_startHere->nextEntry=_tempHold;
 
 	setLastAction(_message);
-	addStack(&undoStack,makeUndoEntry(_message,undoStitch,newLongHolder2(_oldEnd,_oldStart),CASTDATA(_startHere)->startSample));
+	addStack(&undoStack,makeUndoEntry(_message,undoStitch,newLongHolder2(_oldEnd,_oldStart),CASTDATA(_startHere)->startSample,0));
 }
 
 int correctSentenceIndex(int _passedIndex){
@@ -424,6 +426,14 @@ void undoStitch(long _currentSample, void* _passedData){
 	_undoneDeleted->nextEntry = _currentSentence->nextEntry;
 	_currentSentence->nextEntry = _undoneDeleted;
 }
+
+// Passed is malloc'd int with index
+void undoSkip(long _currentSample, void* _passedData){
+	rawSkipped[*((int*)_passedData)]=0;
+}
+
+/////////////////////////////
+
 void keyStitchForward(){
 	nList* _currentSentence = getCurrentSentence(getCurrentSample(),NULL);
 	if (_currentSentence->nextEntry==NULL){
@@ -446,13 +456,16 @@ void keyUndo(){
 		struct undo* _undoAction = popStack(&undoStack);
 		_undoAction->doThis(_undoAction->atSample,_undoAction->passData);
 	
-		char* _stitchedMessage = malloc(strlen(_undoAction->message)+strlen("Undo: \"\"")+1);
-		strcpy(_stitchedMessage,"Undo: \"");
+		char* _stitchedMessage = malloc(strlen(_undoAction->message)+strlen("Undo: []")+1);
+		strcpy(_stitchedMessage,"Undo: [");
 		strcat(_stitchedMessage,_undoAction->message);
-		strcat(_stitchedMessage,"\"");
+		strcat(_stitchedMessage,"]");
 		setLastAction(_stitchedMessage);
 		free(_stitchedMessage);
 	
+		if (_undoAction->freeMessage){
+			free(_undoAction->message);
+		}
 		free(_undoAction->passData);
 		free(_undoAction);
 	}
@@ -490,8 +503,16 @@ void keySkip(){
 	int _currentIndex;
 	getCurrentSentence(getCurrentSample(),&_currentIndex);
 	_currentIndex = correctSentenceIndex(_currentIndex);
-	printf("Chopped %d\n",_currentIndex);
 	rawSkipped[_currentIndex]=1;
+
+	char* _messageBuff = malloc(strlen("Chopped: \"\"")+strlen(rawSubs[_currentIndex])+1);
+	strcpy(_messageBuff,"Chopped: \"");
+	strcat(_messageBuff,rawSubs[_currentIndex]);
+	strcat(_messageBuff,"\"");
+	setLastAction(_messageBuff);
+	int* _dataPointer = malloc(sizeof(int));
+	*_dataPointer=_currentIndex;
+	addStack(&undoStack,makeUndoEntry(_messageBuff,undoSkip,_dataPointer,0,1));
 }
 /////////////////////////////
 
