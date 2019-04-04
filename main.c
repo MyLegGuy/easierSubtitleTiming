@@ -49,6 +49,7 @@
 #define FONTSIZE 20
 #define TIMEPERPIXEL 25
 #define INDENTPIXELS 32
+#define CROSSOUTHDENOM 10
 
 // colors
 #define BACKGROUNDCOLOR MAKERGBA(0,0,0,255)
@@ -58,6 +59,7 @@
 #define COLORCURRENTSENTENCE MAKERGBA(255,0,0,255)
 #define COLORNOSENTENCE BACKGROUNDCOLOR
 #define ACTIVESUBCOLOR FC_MakeColor(0,255,0,255)
+#define CROSSOUTCOLOR MAKERGBA(255,0,0,255) // The line that goes though skipped subs
 
 typedef void(*keyFunc)();
 typedef void(*undoFunc)(long _currentSample, void* _data);
@@ -393,6 +395,22 @@ void lowStitchForwards(nList* _startHere, char* _message){
 	addStack(&undoStack,makeUndoEntry(_message,undoStitch,newLongHolder2(_oldEnd,_oldStart),CASTDATA(_startHere)->startSample));
 }
 
+int correctSentenceIndex(int _passedIndex){
+	if (_passedIndex>=numRawSubs){
+		return numRawSubs-1;
+	}
+	int i;
+	for (i=0;i<=_passedIndex;++i){
+		if (rawSkipped[i]){
+			++_passedIndex;
+		}
+	}
+	if (_passedIndex>=numRawSubs){
+		return numRawSubs-1;
+	}
+	return _passedIndex;
+}
+
 /////////////////////////////
 
 // passed is longHolder2 with item1 being the end of the the first one and item2 being the start of the second one
@@ -467,6 +485,13 @@ void keySeekForwardSentence(){
 }
 void keySeekSentenceStart(){
 	seekAudioSamplesExact(CASTDATA(getCurrentSentence(getCurrentSample(),NULL))->startSample);
+}
+void keySkip(){
+	int _currentIndex;
+	getCurrentSentence(getCurrentSample(),&_currentIndex);
+	_currentIndex = correctSentenceIndex(_currentIndex);
+	printf("Chopped %d\n",_currentIndex);
+	rawSkipped[_currentIndex]=1;
 }
 /////////////////////////////
 
@@ -543,6 +568,7 @@ char init(int argc, char** argv) {
 	bindKey(SDLK_q,keySeekBackSentence,0);
 	bindKey(SDLK_w,keySeekForwardSentence,0);
 	bindKey(SDLK_BACKQUOTE,keySeekSentenceStart,0); // `
+	bindKey(SDLK_d,keySkip,0);
 
 	setLastAction("Welcome");
 	return 0;
@@ -679,6 +705,7 @@ int main (int argc, char** argv) {
 		int _currentY = BARHEIGHT+(INDICATORWIDTH/2);
 		int _currentIndex;
 		struct sentence* _currentSentence = getCurrentSentence(_currentSample,&_currentIndex)->data;
+		_currentIndex = correctSentenceIndex(_currentIndex);
 		int i=_currentIndex;
 		// Center
 		i-=(_maxHeight-_currentY)/2/fontHeight;
@@ -691,6 +718,9 @@ int main (int argc, char** argv) {
 				FC_DrawColor(goodFont, mainWindowRenderer, (_currentSample<=_currentSentence->endSample ? INDENTPIXELS : 0), _currentY, ACTIVESUBCOLOR, rawSubs[i]);
 			}else{
 				FC_Draw(goodFont, mainWindowRenderer, 0, _currentY, rawSubs[i]);
+			}
+			if (rawSkipped[i]){
+				drawRectangle(0,_currentY+(fontHeight-(fontHeight/(double)CROSSOUTHDENOM))/2,FC_GetWidth(goodFont,rawSubs[i]),fontHeight/CROSSOUTHDENOM,CROSSOUTCOLOR);
 			}
 			_currentY+=fontHeight;
 		}
