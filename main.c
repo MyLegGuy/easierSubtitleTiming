@@ -1,4 +1,5 @@
 // do not steel
+// TODO - On the fly sentence recalculation starting from a certian point using different threshold
 /*
 	UIdeas - 
 	Q - Rewind
@@ -51,6 +52,9 @@
 #define INDENTPIXELS 32
 #define CROSSOUTHDENOM 10
 #define EXPLICITCHOPW 3
+#define BOTTOMINFOLINES 1
+#define TIMEFORMAT "%02d:%02d,%03d"
+#define TIMEARGS(a) (int)(a/60000) ,(int)((a%60000)/1000),(int)(a%1000)
 
 // colors
 #define BACKGROUNDCOLOR MAKERGBA(0,0,0,255)
@@ -63,6 +67,7 @@
 #define ACTIVESUBCOLOR FC_MakeColor(0,255,0,255)
 #define CROSSOUTCOLOR MAKERGBA(255,0,0,255) // The line that goes though skipped subs
 #define EXPLICITCHOPCOLOR MAKERGBA(195,110,0,255)
+#define ACTIONHISTORYCOLOR FC_MakeColor(150,150,150,255)
 
 typedef void(*keyFunc)(long _currentSample);
 typedef void(*undoFunc)(long _currentSample, void* _data);
@@ -118,8 +123,19 @@ int totalKeysBound=0;
 SDL_Keycode* boundKeys;
 char* boundKeyModStatus;
 keyFunc* boundFuncs;
-char* lastAction=NULL;
+int sizeActionHistory=0;
+int nextActionIndex=0; // Add the next one to this array index
+char** actionHistory=NULL;
+nList* lastActionMessages=NULL;
 
+int wrapNum(int _passed, int _min, int _max){
+	if (_passed<_min){
+		return _max-(_min-_passed-1);
+	}else if (_passed>_max){
+		return _min+(_passed-_max-1);
+	}
+	return _passed;
+}
 long roundMultiple(long _roundThis, int _multipleOf){
 	int _remainder = _roundThis%_multipleOf;
 	if (_remainder!=0){
@@ -239,10 +255,15 @@ void seekAudioSamples(int _numSamples) {
 void seekAudioMilli(int _numMilliseconds) {
 	seekAudioSamples((_numMilliseconds/(double)1000)*sampleRate);
 }
+// approximation
 long getCurrentSample() {
-	//long _fake = ((audioTimeOther+(SDL_GetTicks()-audioTimeReference))/(double)1000)*sampleRate;
-	//printf("oh  apparent:%ld actual:%ld actual-fake:%ld\n",_fake,pcmPlayPos,pcmPlayPos-_fake);
-	return (((SDL_GetTicks()-audioTimeReference)+audioTimeOther)/(double)1000)*sampleRate;
+	long _currentTime;
+	if (SDL_GetAudioStatus()==SDL_AUDIO_PLAYING){
+		_currentTime = SDL_GetTicks();
+	}else{
+		_currentTime = audioTimeReference; // Don't account for current time when getting sample if we're paused
+	}
+	return (((_currentTime-audioTimeReference)+audioTimeOther)/(double)1000)*sampleRate;
 }
 double getAvgPcm(long _sampleNumber) {
 	double _avg=0;
@@ -301,9 +322,11 @@ nList* findSentences() {
 }
 
 void setLastAction(char* _actionName) {
-	free(lastAction);
-	lastAction = strdup(_actionName);
-	printf("%s\n",lastAction);
+	free(actionHistory[nextActionIndex]);
+	actionHistory[nextActionIndex] = strdup(_actionName);
+	if ((++nextActionIndex)==sizeActionHistory){
+		nextActionIndex=0;
+	}
 }
 
 nList* getCurrentSentence(long _currentSample, int* _retIndex){
@@ -433,6 +456,23 @@ int correctSentenceIndex(int _passedIndex){
 	return _passedIndex;
 }
 
+// realloc, but new memory is zeroed out
+void* recalloc(void* _oldBuffer, int _newSize, int _oldSize){
+	void* _newBuffer = realloc(_oldBuffer,_newSize);
+	if (_newSize > _oldSize){
+		void* _startOfNewData = ((char*)_newBuffer)+_oldSize;
+		memset(_startOfNewData,0,_newSize-_oldSize);
+	}
+	return _newBuffer;
+}
+
+void resizeActionHistory(int _windowHeight){
+	int _oldMax = sizeActionHistory;
+	sizeActionHistory = _windowHeight/fontHeight;
+	actionHistory = recalloc(actionHistory,sizeof(char*)*sizeActionHistory,sizeof(char*)*_oldMax);
+	nextActionIndex = wrapNum(nextActionIndex,0,sizeActionHistory-1);
+}
+
 /////////////////////////////
 
 // passed is longHolder2 with item1 being the end of the the first one and item2 being the start of the second one
@@ -530,8 +570,8 @@ void keySkip(long _currentSample){
 	_currentIndex = correctSentenceIndex(_currentIndex);
 	rawSkipped[_currentIndex]=1;
 
-	char* _messageBuff = malloc(strlen("Chopped: \"\"")+strlen(rawSubs[_currentIndex])+1);
-	strcpy(_messageBuff,"Chopped: \"");
+	char* _messageBuff = malloc(strlen("Skip: \"\"")+strlen(rawSubs[_currentIndex])+1);
+	strcpy(_messageBuff,"Skip: \"");
 	strcat(_messageBuff,rawSubs[_currentIndex]);
 	strcat(_messageBuff,"\"");
 	setLastAction(_messageBuff);
@@ -542,7 +582,7 @@ void keySkip(long _currentSample){
 void keyChop(long _currentSample){
 	nList* _currentSentence = getCurrentSentence(_currentSample,NULL);
 	if (_currentSample>=CASTDATA(_currentSentence)->endSample){
-		setLastAction("Can't chop here, we've gone too far");
+		setLastAction("Can't chop, too far");
 		return;
 	}
 	nList* _newEntry = malloc(sizeof(nList));
@@ -566,8 +606,14 @@ void keyPause(long _currentSample){
 		pauseMusic();
 		setLastAction("Pause");
 	}else{
-		setLastAction("Unknown SDL_GetAudioStatus");
+		printf("Unknown SDL_GetAudioStatus\n");
 	}
+}
+void keyPrintDivider(long _currentSample){
+	long _numMilliseconds = samplesToTime(_currentSample);
+	char _messageBuff[100];
+	sprintf(_messageBuff,"---"TIMEFORMAT"---",TIMEARGS(_numMilliseconds));
+	setLastAction(_messageBuff);
 }
 
 /////////////////////////////
@@ -634,6 +680,11 @@ char init(int argc, char** argv) {
 	free(_fontFilename);
 	fontHeight = FC_GetLineHeight(goodFont);
 
+	// Normally, the SDL window resize will be called on start, but do this explicitly just in case.
+	int _maxHeight;
+	SDL_GetWindowSize(mainWindow,NULL,&_maxHeight);
+	resizeActionHistory(_maxHeight);
+
 	//https://wiki.libsdl.org/SDL_Keycode
 	bindKey(SDLK_s,keyStitchForward,0);
 	bindKey(SDLK_a,keyStitchBackward,0);
@@ -648,6 +699,7 @@ char init(int argc, char** argv) {
 	bindKey(SDLK_d,keySkip,0);
 	bindKey(SDLK_c,keyChop,0);
 	bindKey(SDLK_SPACE,keyPause,0);
+	bindKey(SDLK_ESCAPE,keyPrintDivider,0);
 
 	setLastAction("Welcome");
 	return 0;
@@ -759,6 +811,13 @@ int main (int argc, char** argv) {
 				if (e.key.keysym.sym==MODKEY){
 					_modDown=0;
 				}
+			}else if (e.window.event==SDL_WINDOWEVENT_RESIZED){
+				if (sizeActionHistory!=0 && _currentSample>100){
+					setLastAction("Window resize, messed up history");
+				}
+				int _newHeight;
+				SDL_GetWindowSize(mainWindow,NULL,&_newHeight);
+				resizeActionHistory(_newHeight);
 			}
 		}
 
@@ -790,12 +849,12 @@ int main (int argc, char** argv) {
 		_currentIndex = correctSentenceIndex(_currentIndex);
 		int i=_currentIndex;
 		// Center
-		i-=(_maxHeight-_currentY)/2/fontHeight;
+		i-=(_maxHeight-_currentY-BOTTOMINFOLINES*fontHeight)/2/fontHeight;
 		if (i<0){
 			i=0;
 			_currentY=roundMultiple((_maxHeight-_currentY)/2,fontHeight)+_currentY-_currentIndex*fontHeight;
 		}
-		for (;_currentY<_maxHeight-fontHeight && i<numRawSubs;++i){
+		for (;_currentY<_maxHeight-fontHeight*(BOTTOMINFOLINES+1) && i<numRawSubs;++i){
 			if (i==_currentIndex){
 				FC_DrawColor(goodFont, mainWindowRenderer, (_currentSample<=_currentSentence->endSample ? INDENTPIXELS : 0), _currentY, ACTIVESUBCOLOR, rawSubs[i]);
 			}else{
@@ -807,6 +866,15 @@ int main (int argc, char** argv) {
 			_currentY+=fontHeight;
 		}
 
+		int _actionIndex=nextActionIndex-1;
+		for (_currentY=_maxHeight-fontHeight;_currentY>BARHEIGHT+INDICATORWIDTH/2;_currentY-=fontHeight){
+			_actionIndex = wrapNum(_actionIndex,0,sizeActionHistory-1);
+			FC_DrawColor(goodFont, mainWindowRenderer, _maxWidth-FC_GetWidth(goodFont,actionHistory[_actionIndex]), _currentY, ACTIONHISTORYCOLOR, actionHistory[_actionIndex]);
+			--_actionIndex;
+		}
+
+		long _numMilliseconds = samplesToTime(_currentSample);
+		FC_Draw(goodFont, mainWindowRenderer, 0, _maxHeight-fontHeight,TIMEFORMAT,TIMEARGS(_numMilliseconds));
 		SDL_RenderPresent(mainWindowRenderer);
 	}
 
