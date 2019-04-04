@@ -50,16 +50,19 @@
 #define TIMEPERPIXEL 25
 #define INDENTPIXELS 32
 #define CROSSOUTHDENOM 10
+#define EXPLICITCHOPW 3
 
 // colors
 #define BACKGROUNDCOLOR MAKERGBA(0,0,0,255)
 #define MODBACKGROUNDCOLOR MAKERGBA(0,0,57,255)
 #define MARKERCOLOR MAKERGBA(0,255,0,255)
+#define PAUSEDMARKERCOLOR MAKERGBA(150,150,150,255);
 #define COLORINACTIVESENTENCE MAKERGBA(255,255,255,255)
 #define COLORCURRENTSENTENCE MAKERGBA(255,0,0,255)
 #define COLORNOSENTENCE BACKGROUNDCOLOR
 #define ACTIVESUBCOLOR FC_MakeColor(0,255,0,255)
 #define CROSSOUTCOLOR MAKERGBA(255,0,0,255) // The line that goes though skipped subs
+#define EXPLICITCHOPCOLOR MAKERGBA(195,110,0,255)
 
 typedef void(*keyFunc)(long _currentSample);
 typedef void(*undoFunc)(long _currentSample, void* _data);
@@ -317,7 +320,13 @@ nList* getCurrentSentence(long _currentSample, int* _retIndex){
 	}
 	return _currentEntry;
 }
+int getCurrentSentenceIndex(long _currentSample){
+	int _ret;
+	getCurrentSentence(_currentSample,&_ret);
+	return _ret;
+}
 
+// why is this in a method
 void drawSentences(int _maxWidth, long _currentSample){
 	int _currentX=0;
 	long _highlightSample = _currentSample; // Holder
@@ -328,12 +337,14 @@ void drawSentences(int _maxWidth, long _currentSample){
 		_currentSample=0;
 	}
 	nList* _currentEntry = getCurrentSentence(_currentSample,NULL);
+	signed int _lastDrawXEnd=-20; // Where the last rectangle ended
 	while(_currentX<_maxWidth) {
 		struct sentence* _currentSentence = _currentEntry->data;
 		if (_currentSample<_currentSentence->endSample) {
 			int _lenSamples;
 			uint32_t _drawColor;
-			if (_currentSample<_currentSentence->startSample) { // Draw blank space
+			char _isDrawingSentence = !(_currentSample<_currentSentence->startSample);
+			if (!_isDrawingSentence) { // Draw blank space
 				_lenSamples = _currentSentence->startSample-_currentSample;
 				_drawColor = COLORNOSENTENCE;
 			} else { // Draw sentence
@@ -346,6 +357,15 @@ void drawSentences(int _maxWidth, long _currentSample){
 			}
 			int _drawWidth = ceil(samplesToTime(_lenSamples)/(double)TIMEPERPIXEL);
 			drawRectangle(_currentX,0,_drawWidth,BARHEIGHT,_drawColor);
+
+
+			if (_isDrawingSentence){
+				if (_currentX<=_lastDrawXEnd+1){ // If we're pretty close to the end of the last actual sentence, show the division
+					drawRectangle(_lastDrawXEnd+1,0,EXPLICITCHOPW,BARHEIGHT,EXPLICITCHOPCOLOR);
+				}
+				_lastDrawXEnd = _currentX+_drawWidth;
+			}
+
 			_currentSample+=timeToSamples(_drawWidth*TIMEPERPIXEL); // this will round samples to the nearest multiple of TIMEPERPIXEL
 			_currentX+=_drawWidth;
 		} else {
@@ -426,10 +446,18 @@ void undoStitch(long _currentSample, void* _passedData){
 	_undoneDeleted->nextEntry = _currentSentence->nextEntry;
 	_currentSentence->nextEntry = _undoneDeleted;
 }
-
 // Passed is malloc'd int with index
 void undoSkip(long _currentSample, void* _passedData){
 	rawSkipped[*((int*)_passedData)]=0;
+}
+// No data
+void undoChop(long _currentSample, void* _passedData){
+	nList* _currentEntry = getCurrentSentence(_currentSample,NULL);
+	nList* _freeThis = _currentEntry->nextEntry;
+	CASTDATA(_currentEntry)->endSample = CASTDATA(_freeThis)->endSample;
+	_currentEntry->nextEntry = _freeThis->nextEntry;
+	free(_freeThis->data);
+	free(_freeThis);
 }
 
 /////////////////////////////
@@ -442,8 +470,7 @@ void keyStitchForward(long _currentSample){
 	lowStitchForwards(_currentSentence,"stitch forwards");
 }
 void keyStitchBackward(long _currentSample){
-	int _currentIndex;
-	getCurrentSentence(_currentSample,&_currentIndex);
+	int _currentIndex = getCurrentSentenceIndex(_currentSample);
 	if (_currentIndex==0){
 		return;
 	}
@@ -483,8 +510,7 @@ void keyMegaSeekBack(long _currentSample){
 	seekAudioMilli(MEGASEEK*-1);
 }
 void keySeekBackSentence(long _currentSample){
-	int _currentIndex;
-	getCurrentSentence(_currentSample,&_currentIndex);
+	int _currentIndex = getCurrentSentenceIndex(_currentSample);
 	if (_currentIndex==0){
 		return;
 	}
@@ -500,8 +526,7 @@ void keySeekSentenceStart(long _currentSample){
 	seekAudioSamplesExact(CASTDATA(getCurrentSentence(_currentSample,NULL))->startSample);
 }
 void keySkip(long _currentSample){
-	int _currentIndex;
-	getCurrentSentence(_currentSample,&_currentIndex);
+	int _currentIndex = getCurrentSentenceIndex(_currentSample);
 	_currentIndex = correctSentenceIndex(_currentIndex);
 	rawSkipped[_currentIndex]=1;
 
@@ -512,10 +537,37 @@ void keySkip(long _currentSample){
 	setLastAction(_messageBuff);
 	int* _dataPointer = malloc(sizeof(int));
 	*_dataPointer=_currentIndex;
-	addStack(&undoStack,makeUndoEntry(_messageBuff,undoSkip,_dataPointer,0,1));
+	addStack(&undoStack,makeUndoEntry(_messageBuff,undoSkip,_dataPointer,_currentSample,1));
 }
 void keyChop(long _currentSample){
+	nList* _currentSentence = getCurrentSentence(_currentSample,NULL);
+	if (_currentSample>=CASTDATA(_currentSentence)->endSample){
+		setLastAction("Can't chop here, we've gone too far");
+		return;
+	}
+	nList* _newEntry = malloc(sizeof(nList));
+	_newEntry->data = malloc(sizeof(struct sentence));
+	CASTDATA(_newEntry)->startSample=_currentSample+1;
+	CASTDATA(_newEntry)->endSample=CASTDATA(_currentSentence)->endSample;
+	CASTDATA(_currentSentence)->endSample=_currentSample;
+	nList* _temp = _currentSentence->nextEntry;
+	_currentSentence->nextEntry = _newEntry;
+	_newEntry->nextEntry = _temp;
+	setLastAction("Chop");
 
+	addStack(&undoStack,makeUndoEntry("Chop",undoChop,NULL,_currentSample,0));
+}
+void keyPause(long _currentSample){
+	SDL_AudioStatus _gottonStatus = SDL_GetAudioStatus();
+	if (_gottonStatus==SDL_AUDIO_PAUSED){
+		unpauseMusic();
+		setLastAction("Unpause");
+	}else if (_gottonStatus==SDL_AUDIO_PLAYING){
+		pauseMusic();
+		setLastAction("Pause");
+	}else{
+		setLastAction("Unknown SDL_GetAudioStatus");
+	}
 }
 
 /////////////////////////////
@@ -595,6 +647,7 @@ char init(int argc, char** argv) {
 	bindKey(SDLK_BACKQUOTE,keySeekSentenceStart,0); // `
 	bindKey(SDLK_d,keySkip,0);
 	bindKey(SDLK_c,keyChop,0);
+	bindKey(SDLK_SPACE,keyPause,0);
 
 	setLastAction("Welcome");
 	return 0;
@@ -682,7 +735,7 @@ int main (int argc, char** argv) {
 	char _running=1;
 	while(_running) {
 		long _currentSample = getCurrentSample();
-		
+
 		SDL_Event e;
 		while( SDL_PollEvent( &e ) != 0 ) {
 			if( e.type == SDL_QUIT ) {
@@ -725,8 +778,9 @@ int main (int argc, char** argv) {
 
 		// Draw indicator traingle
 		int _triangleWidth;
+		uint32_t _triangleColor = SDL_GetAudioStatus()==SDL_AUDIO_PLAYING ? MARKERCOLOR : PAUSEDMARKERCOLOR;
 		for (_triangleWidth=1;_triangleWidth<=INDICATORWIDTH;_triangleWidth+=2){
-			drawRectangle(_maxWidth/2-_triangleWidth/2,BARHEIGHT+(_triangleWidth/2),_triangleWidth,1,MARKERCOLOR);
+			drawRectangle(_maxWidth/2-_triangleWidth/2,BARHEIGHT+(_triangleWidth/2),_triangleWidth,1,_triangleColor);
 		}
 
 		// Draw subs
