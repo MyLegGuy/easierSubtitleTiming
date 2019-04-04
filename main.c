@@ -80,6 +80,9 @@ struct sentence {
 	long startSample;
 	long endSample;
 };
+//
+void undoStitch(long _currentSample, void* _passedData);
+//
 
 SDL_Window* mainWindow;
 SDL_Renderer* mainWindowRenderer;
@@ -172,31 +175,30 @@ void my_audio_callback(void *userdata, Uint8 *stream, int len) {
 
 	if (pcmPlayPos>=totalSamples) {
 		pauseMusic();
-		return;
-	}
-
-	SF_INFO* _passedInfo = userdata;
-	int _possibleWriteSamples = (len/sizeof(float))/2;
-	int _shouldWriteSamples;
-	if (pcmPlayPos+_possibleWriteSamples>totalSamples) {
-		_shouldWriteSamples=totalSamples-pcmPlayPos;
-	} else {
-		_shouldWriteSamples = _possibleWriteSamples;
-	}
-	int i;
-	for (i=0; i<_shouldWriteSamples; ++i) {
-		int j;
-		for (j=0; j<_passedInfo->channels; ++j) {
-			SDL_memcpy (&(stream[(i*_passedInfo->channels+j)*sizeof(float)]), &(pcmData[j][pcmPlayPos]), sizeof(float));
+	}else{
+		SF_INFO* _passedInfo = userdata;
+		int _possibleWriteSamples = (len/sizeof(float))/2;
+		int _shouldWriteSamples;
+		if (pcmPlayPos+_possibleWriteSamples>totalSamples) {
+			_shouldWriteSamples=totalSamples-pcmPlayPos;
+		} else {
+			_shouldWriteSamples = _possibleWriteSamples;
 		}
-		//stream[i*2*sizeof(float)] = pcmData[0][pcmPlayPos];
-		//stream[(i*2+1)*sizeof(float)] = pcmData[1][pcmPlayPos];
-		++pcmPlayPos;
+		int i;
+		for (i=0; i<_shouldWriteSamples; ++i) {
+			int j;
+			for (j=0; j<_passedInfo->channels; ++j) {
+				SDL_memcpy (&(stream[(i*_passedInfo->channels+j)*sizeof(float)]), &(pcmData[j][pcmPlayPos]), sizeof(float));
+			}
+			//stream[i*2*sizeof(float)] = pcmData[0][pcmPlayPos];
+			//stream[(i*2+1)*sizeof(float)] = pcmData[1][pcmPlayPos];
+			++pcmPlayPos;
+		}
+		if (_shouldWriteSamples!=_possibleWriteSamples) {
+			memset(&(stream[_shouldWriteSamples]),0,_possibleWriteSamples-_shouldWriteSamples);
+		}
+		//SDL_MixAudio(stream, audio_pos, len, SDL_MIX_MAXVOLUME);// mix from one buffer into another
 	}
-	if (_shouldWriteSamples!=_possibleWriteSamples) {
-		memset(&(stream[_shouldWriteSamples]),0,_possibleWriteSamples-_shouldWriteSamples);
-	}
-	//SDL_MixAudio(stream, audio_pos, len, SDL_MIX_MAXVOLUME);// mix from one buffer into another
 
 	pthread_mutex_unlock(&audioPosLock);
 }
@@ -376,6 +378,21 @@ void removeNewline(char* _toRemove){
 	}
 }
 
+void lowStitchForwards(nList* _startHere, char* _message){
+	// Undo data
+	long _oldEnd = CASTDATA(_startHere)->endSample;
+	long _oldStart = CASTDATA(_startHere->nextEntry)->startSample;
+
+	CASTDATA(_startHere)->endSample=CASTDATA(_startHere->nextEntry)->endSample;
+	nList* _tempHold = _startHere->nextEntry->nextEntry;
+	free(_startHere->nextEntry->data);
+	free(_startHere->nextEntry);
+	_startHere->nextEntry=_tempHold;
+
+	setLastAction(_message);
+	addStack(&undoStack,makeUndoEntry(_message,undoStitch,newLongHolder2(_oldEnd,_oldStart),CASTDATA(_startHere)->startSample));
+}
+
 /////////////////////////////
 
 // passed is longHolder2 with item1 being the end of the the first one and item2 being the start of the second one
@@ -390,21 +407,19 @@ void undoStitch(long _currentSample, void* _passedData){
 	_currentSentence->nextEntry = _undoneDeleted;
 }
 void keyStitchForward(){
-	long _currentSample = getCurrentSample();
-	nList* _currentSentence = getCurrentSentence(_currentSample,NULL);
-
-	// Undo data
-	long _oldEnd = CASTDATA(_currentSentence)->endSample;
-	long _oldStart = CASTDATA(_currentSentence->nextEntry)->startSample;
-
-	CASTDATA(_currentSentence)->endSample=CASTDATA(_currentSentence->nextEntry)->endSample;
-	nList* _tempHold = _currentSentence->nextEntry->nextEntry;
-	free(_currentSentence->nextEntry->data);
-	free(_currentSentence->nextEntry);
-	_currentSentence->nextEntry=_tempHold;
-
-	setLastAction("Stitch forward");
-	addStack(&undoStack,makeUndoEntry("stitch forward",undoStitch,newLongHolder2(_oldEnd,_oldStart),_currentSample));
+	nList* _currentSentence = getCurrentSentence(getCurrentSample(),NULL);
+	if (_currentSentence->nextEntry==NULL){
+		return;
+	}
+	lowStitchForwards(_currentSentence,"stitch forwards");
+}
+void keyStitchBackward(){
+	int _currentIndex;
+	getCurrentSentence(getCurrentSample(),&_currentIndex);
+	if (_currentIndex==0){
+		return;
+	}
+	lowStitchForwards(getnList(timings,_currentIndex-1),"stitch backwards");
 }
 void keyUndo(){
 	if (stackEmpty(undoStack)){
@@ -439,19 +454,19 @@ void keyMegaSeekBack(){
 void keySeekBackSentence(){
 	int _currentIndex;
 	getCurrentSentence(getCurrentSample(),&_currentIndex);
+	if (_currentIndex==0){
+		return;
+	}
 	seekAudioSamplesExact(CASTDATA(getnList(timings, _currentIndex-1))->startSample);
-
-	int i;
-	printf("tried to go to %ld; at %ld; at %ld; try: %ld\n",CASTDATA(getnList(timings, _currentIndex-1))->startSample,getCurrentSample(),pcmPlayPos,timeToSamples(samplesToTime(CASTDATA(getnList(timings, _currentIndex-1))->startSample)));
-	getCurrentSentence(getCurrentSample(),&i);
-	printf("at sentence %d\n",i);
-
 }
 void keySeekForwardSentence(){
 	nList* _possibleNext = getCurrentSentence(getCurrentSample(),NULL)->nextEntry;
 	if (_possibleNext!=NULL){
 		seekAudioSamplesExact(CASTDATA(_possibleNext)->startSample);
 	}
+}
+void keySeekSentenceStart(){
+	seekAudioSamplesExact(CASTDATA(getCurrentSentence(getCurrentSample(),NULL))->startSample);
 }
 /////////////////////////////
 
@@ -519,6 +534,7 @@ char init(int argc, char** argv) {
 
 	//https://wiki.libsdl.org/SDL_Keycode
 	bindKey(SDLK_s,keyStitchForward,0);
+	bindKey(SDLK_a,keyStitchBackward,0);
 	bindKey(SDLK_e,keyUndo,0);
 	bindKey(SDLK_1,keyNormalSeekBack,0);
 	bindKey(SDLK_2,keyNormalSeekForward,0);
@@ -526,6 +542,7 @@ char init(int argc, char** argv) {
 	bindKey(SDLK_2,keyMegaSeekForward,1);
 	bindKey(SDLK_q,keySeekBackSentence,0);
 	bindKey(SDLK_w,keySeekForwardSentence,0);
+	bindKey(SDLK_BACKQUOTE,keySeekSentenceStart,0); // `
 
 	setLastAction("Welcome");
 	return 0;
@@ -609,23 +626,6 @@ int main (int argc, char** argv) {
 
 	/////////////////////////////
 
-	/*
-	printf("%p\n",getnList(timings,0)->data);
-
-	int _lastIndex=0;
-	char _isStart=0;
-	while(1){
-		int _sampleIndex = getCurrentSample();
-		if (!_isStart && ((struct sentence*)(getnList(timings,_lastIndex)->data))->startSample<=_sampleIndex){
-			printf("start %d\n",_lastIndex);
-			_isStart=1;
-		}else if (_isStart && ((struct sentence*)(getnList(timings,_lastIndex)->data))->endSample<=_sampleIndex){
-			printf("end %d\n",_lastIndex++);
-			_isStart=0;
-		}
-
-	}*/
-
 	char _modDown=0;
 	char _running=1;
 	while(_running) {
@@ -697,33 +697,6 @@ int main (int argc, char** argv) {
 
 		SDL_RenderPresent(mainWindowRenderer);
 	}
-
-	/*
-	long _myRef = SDL_GetTicks();
-
-	//SDL_Delay(3000);
-	//seekAudioSamples(-44100);
-	//SDL_Delay(1000);
-	//SDL_CloseAudio();
-	printf("\n");
-	for (int i=0;i<20000;++i){
-
-			printf("\033[A\r",27);
-			int _sampleIndex=getCurrentSample();
-			printf("%f:",getAvgPcm(_sampleIndex));
-			int j;
-			for (j=0;j<20*fabs(pcmData[0][_sampleIndex]);++j){
-			printf("=");
-			}
-			for (;j<20;++j){
-			printf(" ");
-			}
-		printf("\n");
-			//printf("%f\n",pcmData[0][getCurrentSample()]);
-		SDL_Delay(1);
-	}
-
-	*/
 
 	// whatever the opposite of init is
 	FC_FreeFont(goodFont);
