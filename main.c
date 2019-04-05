@@ -1,5 +1,6 @@
 // do not steel
 // TODO - On the fly sentence recalculation starting from a certian point using different threshold
+// TODO - Think about a decide what sentence you're on if you're between two. Right now, it's different for getSentence and getBeforeSentence
 /*
 	UIdeas - 
 	Q - Rewind
@@ -334,14 +335,31 @@ nList* getCurrentSentence(long _currentSample, int* _retIndex){
 	int i;
 	for (i=0;_currentEntry->nextEntry!=NULL;++i){
 		if (CASTDATA(_currentEntry->nextEntry)->startSample>_currentSample){ // If we're not at the next sample yet
-			break;
+			if (_retIndex!=NULL){
+				*_retIndex=i;
+			}
+			return _currentEntry;
 		}
 		_currentEntry=_currentEntry->nextEntry;
 	}
-	if (_retIndex!=NULL){
-		*_retIndex=i;
+	return NULL;
+}
+nList* getBeforeCurrentSentence(long _currentSample, int* _retIndex){
+	nList* _currentEntry = timings;
+	int i;
+	for (i=0;_currentEntry->nextEntry!=NULL;++i){
+		if (CASTDATA(_currentEntry->nextEntry)->endSample>_currentSample){ // If we're not finished with the next sample yet
+			if (i==0 && CASTDATA(_currentEntry)->endSample>_currentSample){ // Special case if we're not even done with the first sample
+				return NULL;
+			}
+			if (_retIndex!=NULL){
+				*_retIndex=i;
+			}
+			return _currentEntry;
+		}
+		_currentEntry=_currentEntry->nextEntry;
 	}
-	return _currentEntry;
+	return NULL;
 }
 int getCurrentSentenceIndex(long _currentSample){
 	int _ret;
@@ -499,6 +517,30 @@ void undoChop(long _currentSample, void* _passedData){
 	free(_freeThis->data);
 	free(_freeThis);
 }
+// data is longHolder2 with start and end
+void undoDeleteSentence(long _currentSample, void* _passedData){
+	nList* _newEntry = malloc(sizeof(nList));
+	_newEntry->data = malloc(sizeof(struct sentence));
+	CASTDATA(_newEntry)->startSample = ((struct longHolder2*)_passedData)->item1;
+	CASTDATA(_newEntry)->endSample = ((struct longHolder2*)_passedData)->item2;
+
+	// insertion sort
+	nList* _prevList=NULL;
+	ITERATENLIST(timings,{
+		//_currentnList
+		if (CASTDATA(_currentnList)->startSample>CASTDATA(_newEntry)->endSample){
+			_newEntry->nextEntry=_currentnList;
+			break;
+		}
+		_prevList = _currentnList;
+	});
+
+	if (_prevList==NULL){
+		timings = _newEntry;
+	}else{
+		_prevList->nextEntry = _newEntry;
+	}
+}
 
 /////////////////////////////
 
@@ -510,11 +552,7 @@ void keyStitchForward(long _currentSample){
 	lowStitchForwards(_currentSentence,"stitch forwards");
 }
 void keyStitchBackward(long _currentSample){
-	int _currentIndex = getCurrentSentenceIndex(_currentSample);
-	if (_currentIndex==0){
-		return;
-	}
-	lowStitchForwards(getnList(timings,_currentIndex-1),"stitch backwards");
+	lowStitchForwards(getBeforeCurrentSentence(_currentSample,NULL),"stitch backwards");
 }
 void keyUndo(long _currentSample){
 	if (stackEmpty(undoStack)){
@@ -550,11 +588,7 @@ void keyMegaSeekBack(long _currentSample){
 	seekAudioMilli(MEGASEEK*-1);
 }
 void keySeekBackSentence(long _currentSample){
-	int _currentIndex = getCurrentSentenceIndex(_currentSample);
-	if (_currentIndex==0){
-		return;
-	}
-	seekAudioSamplesExact(CASTDATA(getnList(timings, _currentIndex-1))->startSample);
+	seekAudioSamplesExact(CASTDATA(getBeforeCurrentSentence(_currentSample,NULL))->startSample);
 }
 void keySeekForwardSentence(long _currentSample){
 	nList* _possibleNext = getCurrentSentence(_currentSample,NULL)->nextEntry;
@@ -614,6 +648,27 @@ void keyPrintDivider(long _currentSample){
 	char _messageBuff[100];
 	sprintf(_messageBuff,"---"TIMEFORMAT"---",TIMEARGS(_numMilliseconds));
 	setLastAction(_messageBuff);
+}
+void keyDeleteSentence(long _currentSample){
+	nList* _previousEntry = getBeforeCurrentSentence(_currentSample,NULL);
+	nList* _currentEntry;
+	if (_previousEntry==NULL){
+		_currentEntry=timings;
+	}else{
+		_currentEntry=_previousEntry->nextEntry;
+	}
+	nList* _replacement = _currentEntry->nextEntry;
+	long _oldStart = CASTDATA(_currentEntry)->startSample;
+	long _oldEnd = CASTDATA(_currentEntry)->endSample;
+	free(_currentEntry->data);
+	free(_currentEntry);
+	if (_previousEntry==NULL){
+		timings = _replacement;
+	}else{
+		_previousEntry->nextEntry = _replacement;
+	}
+	addStack(&undoStack,makeUndoEntry("Del sentence",undoDeleteSentence,newLongHolder2(_oldStart,_oldEnd),_currentSample,0));
+	setLastAction("Del sentence");
 }
 
 /////////////////////////////
@@ -700,6 +755,7 @@ char init(int argc, char** argv) {
 	bindKey(SDLK_c,keyChop,0);
 	bindKey(SDLK_SPACE,keyPause,0);
 	bindKey(SDLK_ESCAPE,keyPrintDivider,0);
+	bindKey(SDLK_x,keyDeleteSentence,0);
 
 	setLastAction("Welcome");
 	return 0;
