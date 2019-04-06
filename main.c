@@ -1,6 +1,5 @@
 // do not steel
 // TODO - On the fly sentence recalculation starting from a certian point using different threshold
-// TODO - Think about a decide what sentence you're on if you're between two. Right now, it's different for getSentence and getBeforeSentence
 /*
 	UIdeas - 
 	Q - Rewind
@@ -29,6 +28,10 @@
 // when looking for default font. Must end in a slash
 #define DEFAULTFONTDIR "/usr/share/fonts/TTF/"
 #define GETFONTCOMMAND "fc-match"
+// Defined for the srt file format
+#define SUBFORMATSTRING "%d\n%s --> %s\n%s\n\n"
+#define SRTTIMEFORMAT "%02d:%02d:%02d,%03d"
+#define READSRTFORMAT "%d\n"SRTTIMEFORMAT" --> "SRTTIMEFORMAT"\n" // For reading srt. does not read actual sub, does that manually
 
 #define MAKERGBA(r,g,b,a) ((((a)&0xFF)<<24) | (((b)&0xFF)<<16) | (((g)&0xFF)<<8) | (((r)&0xFF)<<0))
 #define PLAY_SAMPLES  4096
@@ -128,7 +131,19 @@ int sizeActionHistory=0;
 int nextActionIndex=0; // Add the next one to this array index
 char** actionHistory=NULL;
 nList* lastActionMessages=NULL;
+int addingSubIndex=-1;
 
+void seekPast(FILE* fp, unsigned char _target){
+	while (1){
+		int _lastRead = fgetc(fp);
+		if (_lastRead==_target || _lastRead==EOF){
+			break;
+		}
+	}
+}
+void seekNextLine(FILE* fp){
+	seekPast(fp,0x0A);
+}
 int wrapNum(int _passed, int _min, int _max){
 	if (_passed<_min){
 		return _max-(_min-_passed-1);
@@ -183,7 +198,7 @@ void drawRectangle(int x, int y, int w, int h, uint32_t _color) {
 	tempRect.h=h;
 	SDL_RenderFillRect(mainWindowRenderer,&tempRect);
 }
-long timeToSamples(int _numMilliseconds) {
+long timeToSamples(long _numMilliseconds) {
 	return ((_numMilliseconds*sampleRate)/1000);
 }
 void unpauseMusic() {
@@ -274,7 +289,7 @@ double getAvgPcm(long _sampleNumber) {
 	}
 	return _avg/totalChannels;
 }
-nList* findSentences() {
+nList* findSentences(long _startSample, double _passedThreshold) {
 	nList* _ret=NULL;
 
 	// Work with this, add it to the final list once it's good
@@ -285,9 +300,9 @@ nList* findSentences() {
 	long _silenceStreakStart;
 
 	long i;
-	for (i=0; i<totalSamples; ++i) {
+	for (i=_startSample; i<totalSamples; ++i) {
 		if (_sentenceActive) {
-			if (getAvgPcm(i)<SILENCE_THRESHOLD) {
+			if (getAvgPcm(i)<_passedThreshold) {
 				if (_silenceStreak==0) {
 					_silenceStreakStart=i;
 				}
@@ -311,7 +326,7 @@ nList* findSentences() {
 				_silenceStreak=0;
 			}
 		} else {
-			if (getAvgPcm(i)>=SILENCE_THRESHOLD) {
+			if (getAvgPcm(i)>=_passedThreshold) {
 				_sentenceActive=1;
 				_silenceStreak=0;
 				_currentPart.startSample=i;
@@ -335,31 +350,30 @@ nList* getCurrentSentence(long _currentSample, int* _retIndex){
 	int i;
 	for (i=0;_currentEntry->nextEntry!=NULL;++i){
 		if (CASTDATA(_currentEntry->nextEntry)->startSample>_currentSample){ // If we're not at the next sample yet
-			if (_retIndex!=NULL){
-				*_retIndex=i;
-			}
-			return _currentEntry;
+			break;
 		}
 		_currentEntry=_currentEntry->nextEntry;
 	}
-	return NULL;
+	if (_retIndex!=NULL){
+		*_retIndex=i;
+	}
+	return _currentEntry;
 }
 nList* getBeforeCurrentSentence(long _currentSample, int* _retIndex){
 	nList* _currentEntry = timings;
+	nList* _prevEntry=NULL;
 	int i;
-	for (i=0;_currentEntry->nextEntry!=NULL;++i){
-		if (CASTDATA(_currentEntry->nextEntry)->endSample>_currentSample){ // If we're not finished with the next sample yet
-			if (i==0 && CASTDATA(_currentEntry)->endSample>_currentSample){ // Special case if we're not even done with the first sample
-				return NULL;
-			}
-			if (_retIndex!=NULL){
-				*_retIndex=i;
-			}
-			return _currentEntry;
+	for (i=-1;_currentEntry->nextEntry!=NULL;++i){
+		if (CASTDATA(_currentEntry->nextEntry)->startSample>_currentSample){ // If we're not at the next sample yet
+			break;
 		}
+		_prevEntry=_currentEntry;
 		_currentEntry=_currentEntry->nextEntry;
 	}
-	return NULL;
+	if (_retIndex!=NULL){
+		*_retIndex=i;
+	}
+	return _prevEntry;
 }
 int getCurrentSentenceIndex(long _currentSample){
 	int _ret;
@@ -542,6 +556,37 @@ void undoDeleteSentence(long _currentSample, void* _passedData){
 	}
 }
 
+long timeToMilliseconds(int _hours, int _mins, int _secs, int _milliseconds){
+	return (_hours*3600+_mins*60+_secs)*1000+_milliseconds;
+}
+int milliToMilli(long _milliseconds){
+	return _milliseconds%1000; // Whatever can't fit into a second
+}
+int milliToSec(long _milliseconds){
+	return (_milliseconds/1000)%60; // To seconds, whatever can't fit into a minute.
+}
+int milliToMin(long _milliseconds){
+	return (_milliseconds/60000)%60; // To minutes, whatever can't fit in hours
+}
+int milliToHour(long _milliseconds){
+	return _milliseconds/60000/60; // To minutes, then to hours
+}
+void makeTimestamp(char* _buff, long _milliseconds){
+	sprintf(_buff,SRTTIMEFORMAT,milliToHour(_milliseconds),milliToMin(_milliseconds),milliToSec(_milliseconds),milliToMilli(_milliseconds));
+}
+void writeSingleSrt(int _index, long _startMilli, double _endMilli, char* _sub, FILE* fp){
+	char strstampone[strlen(SRTTIMEFORMAT)];
+	char strstamptwo[strlen(SRTTIMEFORMAT)];
+
+	makeTimestamp(strstampone,_startMilli);
+	makeTimestamp(strstamptwo,_endMilli);
+
+	char complete[strlen(SUBFORMATSTRING)+strlen(strstampone)+strlen(_sub)+strlen(strstamptwo)+1];
+	sprintf(complete,SUBFORMATSTRING,_index,strstampone,strstamptwo,_sub);
+
+	fwrite(complete,strlen(complete),1,fp);
+}
+
 /////////////////////////////
 
 void keyStitchForward(long _currentSample){
@@ -670,6 +715,62 @@ void keyDeleteSentence(long _currentSample){
 	addStack(&undoStack,makeUndoEntry("Del sentence",undoDeleteSentence,newLongHolder2(_oldStart,_oldEnd),_currentSample,0));
 	setLastAction("Del sentence");
 }
+void keyRecalculateSentences(long _currentSample){
+
+	nList* _currentSentence = getBeforeCurrentSentence(_currentSample,NULL);
+	if (_currentSentence!=NULL && _currentSentence->nextEntry!=NULL){
+		pauseMusic();
+		printf("(Default is 10)\nInput 1-100:\n");
+		size_t _lineSize=0;
+		char* _lastLine=NULL;
+		SDL_SetRenderDrawColor(mainWindowRenderer,0,0,0,255);
+		SDL_RenderClear(mainWindowRenderer);
+		FC_Draw(goodFont, mainWindowRenderer, 0, 0, "Waiting for stdin");
+		SDL_RenderPresent(mainWindowRenderer);
+		if (getline(&_lastLine,&_lineSize,stdin)==-1){
+			setLastAction("Input error");
+		}else{
+			int _possibleInput = atoi(_lastLine);
+			if (_possibleInput==0){
+				printf("Invalid input\n");
+			}else{
+				freenList(_currentSentence->nextEntry, 1);
+				_currentSentence->nextEntry = findSentences(CASTDATA(_currentSentence)->endSample,_possibleInput/(double)100);
+				setLastAction("Recalculate sentences");
+			}
+		}
+		free(_lastLine);
+
+		unpauseMusic();
+	}
+}
+
+void keyAddSub(long _currentSample){
+	nList* _newEntry = malloc(sizeof(nList));
+	_newEntry->data = malloc(sizeof(struct sentence));
+	CASTDATA(_newEntry)->startSample=_currentSample;
+	CASTDATA(_newEntry)->endSample=_currentSample+1;
+
+	nList* _prevList=NULL;
+	int i=0;
+	ITERATENLIST(timings,{
+		if (_currentSample<CASTDATA(_currentnList)->endSample){
+			break;
+		}
+		_prevList=_currentnList;
+		++i;
+	});
+	nList* _tempHold = _prevList->nextEntry;
+	_prevList->nextEntry = _newEntry;
+	_newEntry->nextEntry = _tempHold;
+
+	addingSubIndex = i;
+	setLastAction("Adding sub");
+
+}
+void keyEndSub(long _currentSample){
+	addingSubIndex=-1;
+}
 
 /////////////////////////////
 
@@ -700,8 +801,8 @@ char* getFontFilename(){
 	}
 }
 
-void loadRawsubs(char* filename){
-	FILE* fp = fopen(filename,"rb");
+void loadRawsubs(const char* _filename){
+	FILE* fp = fopen(_filename,"rb");
 	size_t _lineSize=0;
 	char* _lastLine=NULL;
 	numRawSubs=0;
@@ -714,10 +815,52 @@ void loadRawsubs(char* filename){
 		_lastLine=NULL;
 	}
 	fclose(fp);
-	rawSkipped = calloc(1,sizeof(char)*numRawSubs);
+}
+void loadSrt(const char* _filename){
+	nList* _subList=NULL;
+	FILE* fp = fopen(_filename,"rb");
+	numRawSubs=0;
+	while(!feof(fp)){
+		int _currentIndex;
+		int _numHours[2];
+		int _numMinutes[2];
+		int _numSeconds[2];
+		int _numMilliseconds[2];
+		if (fscanf(fp,READSRTFORMAT,&_currentIndex,&_numHours[0],&_numMinutes[0],&_numSeconds[0],&_numMilliseconds[0],&_numHours[1],&_numMinutes[1],&_numSeconds[1],&_numMilliseconds[1])==EOF){
+			break;
+		}
+		size_t _lineSize=0;
+		char* _lastLine=NULL;
+		getline(&_lastLine,&_lineSize,fp);
+		seekNextLine(fp);
+
+		// Make sentence
+		nList* _currentEntry = addnList(&timings);
+		_currentEntry->data = malloc(sizeof(struct sentence));
+		CASTDATA(_currentEntry)->startSample = timeToSamples(timeToMilliseconds(_numHours[0],_numMinutes[0],_numSeconds[0],_numMilliseconds[0]));
+		CASTDATA(_currentEntry)->endSample = timeToSamples(timeToMilliseconds(_numHours[1],_numMinutes[1],_numSeconds[1],_numMilliseconds[1]));
+		// put sub in list
+		addnList(&_subList)->data = _lastLine;
+
+		numRawSubs++;
+	}
+	// Put subs in an array instead
+	rawSubs = malloc(sizeof(char*)*numRawSubs);
+	int i=0;
+	ITERATENLIST(_subList,{
+		rawSubs[i++] = _currentnList->data;
+	});
+	freenList(_subList,0);
+
+	fclose(fp);
 }
 
-char init(int argc, char** argv) {
+char init(int argc, char** argv, const char* _manualFontFilename) {
+	if (pthread_mutex_init(&audioPosLock,NULL)!=0) {
+		printf("mutex init failed");
+		return 1;
+	}
+
 	if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO) < 0) {
 		printf("fail open sdl");
 		return 1;
@@ -726,13 +869,17 @@ char init(int argc, char** argv) {
 	mainWindowRenderer = SDL_CreateRenderer( mainWindow, -1, SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_ACCELERATED);
 
 	goodFont = FC_CreateFont();
-	char* _fontFilename = getFontFilename();
-	if (_fontFilename==NULL){
-		printf("Could not find font filename. Please pass one using the --font option. See --help for more info.\n");
-		return 1;
+	if (_manualFontFilename==NULL){
+		char* _fontFilename = getFontFilename();
+		if (_fontFilename==NULL){
+			printf("Could not find font filename. Pass one with arguments.\n");
+			return 1;
+		}
+		FC_LoadFont(goodFont, mainWindowRenderer, _fontFilename, FONTSIZE, FC_MakeColor(255,255,255,255), TTF_STYLE_NORMAL);
+		free(_fontFilename);
+	}else{
+		FC_LoadFont(goodFont, mainWindowRenderer, _manualFontFilename, FONTSIZE, FC_MakeColor(255,255,255,255), TTF_STYLE_NORMAL);
 	}
-	FC_LoadFont(goodFont, mainWindowRenderer, _fontFilename, FONTSIZE, FC_MakeColor(255,255,255,255), TTF_STYLE_NORMAL);
-	free(_fontFilename);
 	fontHeight = FC_GetLineHeight(goodFont);
 
 	// Normally, the SDL window resize will be called on start, but do this explicitly just in case.
@@ -756,29 +903,59 @@ char init(int argc, char** argv) {
 	bindKey(SDLK_SPACE,keyPause,0);
 	bindKey(SDLK_ESCAPE,keyPrintDivider,0);
 	bindKey(SDLK_x,keyDeleteSentence,0);
+	bindKey(SDLK_r,keyRecalculateSentences,0);
+
+	bindKey(SDLK_a,keyAddSub,1);
+	bindKey(SDLK_s,keyEndSub,1);
 
 	setLastAction("Welcome");
 	return 0;
 }
 
 int main (int argc, char** argv) {
-	// init
-	if (init(argc,argv)) {
+	if (argc<3){
+		printf("Usage:\n");
+		printf("%s <sound in> <srt out>\n",argv[0]);
+		printf("Stuff you can append to the end:\n");
+		printf("--font\t<ttf filename>\n--continue\tAllows to continue from srt\n--plain\t<plain sub file>\n--readonly\n\nNote that you must pass plain subs or continue from srt.\n");
 		return 1;
 	}
-	if (pthread_mutex_init(&audioPosLock,NULL)!=0) {
-		printf("mutex init failed");
+	// Need to parse args here so we can use local variables
+	char _doWriteSrt=1;
+	char* _overrideFont=NULL;
+	char _isContinue;
+	char* _srtOut=NULL;
+	char* _soundIn=NULL;
+	char* _plainsubsIn=NULL;
+	_soundIn=argv[1];
+	_srtOut=argv[2];
+	int i;
+	for (i=3;i<argc;++i){
+		if (strcmp(argv[i],"--font")==0){
+			_overrideFont = argv[++i];
+		}else if (strcmp(argv[i],"--continue")==0){
+			_isContinue=1;
+		}else if (strcmp(argv[i],"--plain")==0){
+			_plainsubsIn=argv[++i];
+		}else if (strcmp(argv[i],"--readonly")==0){
+			_doWriteSrt=0;
+			printf("Will not write srt\n");
+		}
+	}
+	if (!(_plainsubsIn!=NULL || _isContinue)){
+		printf("Need plain subs or continue from srt\n");
+		return 1;
+	}
+	if (init(argc,argv,_overrideFont)) {
 		return 1;
 	}
 
-	loadRawsubs("./1.fakesubs");
 	// init audio
-	char* infilename = "./1.ogg";
 	SNDFILE* infile = NULL;
 	SF_INFO	_audioInfo;
 	memset (&_audioInfo, 0, sizeof (_audioInfo));
-	if ((infile = sf_open (infilename, SFM_READ, &_audioInfo)) == NULL) {
-		printf ("Not able to open input file %s.\n", infilename);
+	if ((infile = sf_open (_soundIn, SFM_READ, &_audioInfo)) == NULL) {
+		printf ("Not able to open input file %s.\n", _soundIn);
 		printf("%s\n",sf_strerror (NULL));
 		return 1;
 	}
@@ -786,13 +963,11 @@ int main (int argc, char** argv) {
 	sampleRate=_audioInfo.samplerate;
 	totalChannels=_audioInfo.channels;
 	// info
-	printf("# Converted from file %s.\n", infilename);
+	printf("# Converted from file %s.\n", _soundIn);
 	printf("# Channels %d, Sample rate %d\n", _audioInfo.channels, _audioInfo.samplerate);
-
 
 	// Read entire file as pcm info big boy buffer
 	pcmData = malloc(sizeof(float*)*_audioInfo.channels);
-	int i;
 	for (i=0; i<_audioInfo.channels; ++i) {
 		pcmData[i] = malloc(sizeof(float)*_audioInfo.frames);
 	}
@@ -805,19 +980,12 @@ int main (int argc, char** argv) {
 		for (i = 0; i < _lastReadCount; i++) {
 			int j;
 			for (j = 0; j < _audioInfo.channels; j++) {
-
 				pcmData[j][_wroteSamples] = _readBuf[i*_audioInfo.channels+j];
-				//if (full_precision)
-				//
-				//else
-				//	fprintf (outfile, " % 12.10f", buf [k * channels + m]);
-				//fprintf (outfile, "\n");
 			}
 			++_wroteSamples;
 		}
 	}
 	sf_close (infile);
-
 
 	// init
 	SDL_AudioSpec wav_spec; // the specs of our piece of music
@@ -833,7 +1001,14 @@ int main (int argc, char** argv) {
 		return 1;
 	}
 
-	timings = findSentences();
+	if (_isContinue){
+		// init sentences and raw subs from srt
+		loadSrt(_srtOut);
+	}else{
+		loadRawsubs(_plainsubsIn);
+		timings = findSentences(0,SILENCE_THRESHOLD);
+	}
+	rawSkipped = calloc(1,sizeof(char)*numRawSubs);
 
 	unpauseMusic();
 
@@ -843,7 +1018,6 @@ int main (int argc, char** argv) {
 	char _running=1;
 	while(_running) {
 		long _currentSample = getCurrentSample();
-
 		SDL_Event e;
 		while( SDL_PollEvent( &e ) != 0 ) {
 			if( e.type == SDL_QUIT ) {
@@ -877,6 +1051,20 @@ int main (int argc, char** argv) {
 			}
 		}
 
+		// Explicitly placed after key events so it can account for new sentences being made
+		int _currentIndex;
+		nList* _currentEntry = getCurrentSentence(_currentSample,&_currentIndex);
+		struct sentence* _currentSentence = _currentEntry->data;
+
+		if (addingSubIndex!=-1){
+			if (addingSubIndex==_currentIndex){
+				_currentSentence->endSample=_currentSample;
+			}else{ // If we've hit the next sentence
+				CASTDATA(getBeforeCurrentSentence(_currentSample,NULL))->endSample=_currentSentence->startSample;
+				addingSubIndex=-1;
+			}
+		}
+
 		if (_modDown){
 			setDrawColor(MODBACKGROUNDCOLOR);
 		}else{
@@ -900,8 +1088,6 @@ int main (int argc, char** argv) {
 
 		// Draw subs
 		int _currentY = BARHEIGHT+(INDICATORWIDTH/2);
-		int _currentIndex;
-		struct sentence* _currentSentence = getCurrentSentence(_currentSample,&_currentIndex)->data;
 		_currentIndex = correctSentenceIndex(_currentIndex);
 		int i=_currentIndex;
 		// Center
@@ -933,6 +1119,24 @@ int main (int argc, char** argv) {
 		FC_Draw(goodFont, mainWindowRenderer, 0, _maxHeight-fontHeight,TIMEFORMAT,TIMEARGS(_numMilliseconds));
 		SDL_RenderPresent(mainWindowRenderer);
 	}
+
+	if (_doWriteSrt){
+		printf("Writing srt...\n");
+		FILE* _outfp = fopen(_srtOut,"wb");
+		nList* _current = timings;
+		int _currentIndex=1;
+		for (i=0;i<numRawSubs;++i){
+			if (!rawSkipped[i]){
+				if (_current==NULL){
+					printf("Unexpected end of sentences. Was on raw sub number %d\n",i);
+				}
+				writeSingleSrt(_currentIndex++,samplesToTime(CASTDATA(_current)->startSample),samplesToTime(CASTDATA(_current)->endSample),rawSubs[i],_outfp);
+				_current = _current->nextEntry;
+			}
+		}
+		fclose(_outfp);
+	}
+
 
 	// whatever the opposite of init is
 	FC_FreeFont(goodFont);
