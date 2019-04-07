@@ -97,6 +97,7 @@ struct sentence {
 };
 //
 void undoStitch(long _currentSample, void* _passedData);
+void loadRawsubs(const char* _filename);
 //
 
 SDL_Window* mainWindow;
@@ -122,6 +123,7 @@ nStack* undoStack;
 int numRawSubs=0;
 char** rawSubs;
 char* rawSkipped;
+char* plainSubsFilename; // For reloading
 
 int totalKeysBound=0;
 SDL_Keycode* boundKeys;
@@ -297,7 +299,7 @@ nList* findSentences(long _startSample, double _passedThreshold) {
 
 	char _sentenceActive=0;
 	long _silenceStreak=0;
-	long _silenceStreakStart;
+	long _silenceStreakStart=0;
 
 	long i;
 	for (i=_startSample; i<totalSamples; ++i) {
@@ -311,16 +313,16 @@ nList* findSentences(long _startSample, double _passedThreshold) {
 				if (samplesToTime(_silenceStreak)>=SENTENCE_SPACE_TIME) {
 					// Ensure that it isn't just an audio pop or something.
 					// It has to be an actual sentence
-					if (samplesToTime(i-_currentPart.startSample)>=MIN_SENTENCE_TIME) {
+					if (samplesToTime(_silenceStreakStart-_currentPart.startSample)>=MIN_SENTENCE_TIME) {
 						//printf("Sentence from %d to %d: %f\n",_currentPart.startSample,i,samplesToTime(i-_currentPart.startSample));
 						// Put in list
 						_currentPart.endSample=_silenceStreakStart;
 						void* _destData = malloc(sizeof(struct sentence));
 						memcpy(_destData,&_currentPart,sizeof(struct sentence));
 						addnList(&_ret)->data = _destData;
-						//
-						_sentenceActive=0;
 					}
+					//
+					_sentenceActive=0;
 				}
 			} else {
 				_silenceStreak=0;
@@ -633,7 +635,10 @@ void keyMegaSeekBack(long _currentSample){
 	seekAudioMilli(MEGASEEK*-1);
 }
 void keySeekBackSentence(long _currentSample){
-	seekAudioSamplesExact(CASTDATA(getBeforeCurrentSentence(_currentSample,NULL))->startSample);
+	nList* _possibleEntry = getBeforeCurrentSentence(_currentSample,NULL);
+	if (_possibleEntry!=NULL){
+		seekAudioSamplesExact(CASTDATA(_possibleEntry)->startSample);
+	}
 }
 void keySeekForwardSentence(long _currentSample){
 	nList* _possibleNext = getCurrentSentence(_currentSample,NULL)->nextEntry;
@@ -771,6 +776,15 @@ void keyAddSub(long _currentSample){
 void keyEndSub(long _currentSample){
 	addingSubIndex=-1;
 }
+void keyReloadPlain(long _currentSample){
+	int i;
+	for (i=0;i<numRawSubs;++i){
+		free(rawSubs[i]);
+	}
+	free(rawSubs);
+	rawSubs=NULL;
+	loadRawsubs(plainSubsFilename);
+}
 
 /////////////////////////////
 
@@ -805,16 +819,23 @@ void loadRawsubs(const char* _filename){
 	FILE* fp = fopen(_filename,"rb");
 	size_t _lineSize=0;
 	char* _lastLine=NULL;
+	int _oldNumRaw = numRawSubs;
 	numRawSubs=0;
 	while (getline(&_lastLine,&_lineSize,fp)!=-1){
-		_lineSize=0;
-		numRawSubs++;
-		rawSubs = realloc(rawSubs,sizeof(char*)*(numRawSubs));
 		removeNewline(_lastLine);
-		rawSubs[numRawSubs-1]=_lastLine;
+		if (strlen(_lastLine)<=1){
+			free(_lastLine);
+		}else{
+			numRawSubs++;
+			rawSubs = realloc(rawSubs,sizeof(char*)*(numRawSubs));
+			rawSubs[numRawSubs-1]=_lastLine;
+		}
+		_lineSize=0;
 		_lastLine=NULL;
 	}
+	free(_lastLine); // Need to free the pointer even after getline fails
 	fclose(fp);
+	rawSkipped = recalloc(rawSkipped,sizeof(char)*numRawSubs,sizeof(char)*_oldNumRaw);
 }
 void loadSrt(const char* _filename){
 	nList* _subList=NULL;
@@ -904,6 +925,7 @@ char init(int argc, char** argv, const char* _manualFontFilename) {
 	bindKey(SDLK_ESCAPE,keyPrintDivider,0);
 	bindKey(SDLK_x,keyDeleteSentence,0);
 	bindKey(SDLK_r,keyRecalculateSentences,0);
+	bindKey(SDLK_F5,keyReloadPlain,1);
 
 	bindKey(SDLK_a,keyAddSub,1);
 	bindKey(SDLK_s,keyEndSub,1);
@@ -923,10 +945,9 @@ int main (int argc, char** argv) {
 	// Need to parse args here so we can use local variables
 	char _doWriteSrt=1;
 	char* _overrideFont=NULL;
-	char _isContinue;
+	char _isContinue=0;
 	char* _srtOut=NULL;
 	char* _soundIn=NULL;
-	char* _plainsubsIn=NULL;
 	_soundIn=argv[1];
 	_srtOut=argv[2];
 	int i;
@@ -936,13 +957,13 @@ int main (int argc, char** argv) {
 		}else if (strcmp(argv[i],"--continue")==0){
 			_isContinue=1;
 		}else if (strcmp(argv[i],"--plain")==0){
-			_plainsubsIn=argv[++i];
+			plainSubsFilename=argv[++i];
 		}else if (strcmp(argv[i],"--readonly")==0){
 			_doWriteSrt=0;
 			printf("Will not write srt\n");
 		}
 	}
-	if (!(_plainsubsIn!=NULL || _isContinue)){
+	if (!(plainSubsFilename!=NULL || _isContinue)){
 		printf("Need plain subs or continue from srt\n");
 		return 1;
 	}
@@ -1002,13 +1023,14 @@ int main (int argc, char** argv) {
 	}
 
 	if (_isContinue){
+		printf("Continue from srt\n");
 		// init sentences and raw subs from srt
 		loadSrt(_srtOut);
+		rawSkipped = calloc(1,sizeof(char)*numRawSubs);
 	}else{
-		loadRawsubs(_plainsubsIn);
+		loadRawsubs(plainSubsFilename);
 		timings = findSentences(0,SILENCE_THRESHOLD);
 	}
-	rawSkipped = calloc(1,sizeof(char)*numRawSubs);
 
 	unpauseMusic();
 
@@ -1129,6 +1151,7 @@ int main (int argc, char** argv) {
 			if (!rawSkipped[i]){
 				if (_current==NULL){
 					printf("Unexpected end of sentences. Was on raw sub number %d\n",i);
+					break;
 				}
 				writeSingleSrt(_currentIndex++,samplesToTime(CASTDATA(_current)->startSample),samplesToTime(CASTDATA(_current)->endSample),rawSubs[i],_outfp);
 				_current = _current->nextEntry;
