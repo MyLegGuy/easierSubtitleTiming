@@ -1,5 +1,6 @@
 // do not steel
 // TODO - On the fly sentence recalculation starting from a certian point using different threshold
+// TODO - React add
 /*
 	UIdeas - 
 	Q - Rewind
@@ -725,7 +726,7 @@ void keyRecalculateSentences(long _currentSample){
 	nList* _currentSentence = getBeforeCurrentSentence(_currentSample,NULL);
 	if (_currentSentence!=NULL && _currentSentence->nextEntry!=NULL){
 		pauseMusic();
-		printf("(Default is 10)\nInput 1-100:\n");
+		printf("(Default is 1)\nInput 1-100:\n");
 		size_t _lineSize=0;
 		char* _lastLine=NULL;
 		SDL_SetRenderDrawColor(mainWindowRenderer,0,0,0,255);
