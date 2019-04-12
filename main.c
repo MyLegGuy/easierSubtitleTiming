@@ -750,7 +750,6 @@ void keyRecalculateSentences(long _currentSample){
 		unpauseMusic();
 	}
 }
-
 void keyAddSub(long _currentSample){
 	nList* _newEntry = malloc(sizeof(nList));
 	_newEntry->data = malloc(sizeof(struct sentence));
@@ -773,6 +772,9 @@ void keyAddSub(long _currentSample){
 	addingSubIndex = i;
 	setLastAction("Adding sub");
 
+}
+void keyReactAddSub(long _currentSample){
+	keyAddSub(_currentSample-timeToSamples(REACTSEEK));
 }
 void keyEndSub(long _currentSample){
 	addingSubIndex=-1;
@@ -930,6 +932,7 @@ char init(int argc, char** argv, const char* _manualFontFilename) {
 
 	bindKey(SDLK_a,keyAddSub,1);
 	bindKey(SDLK_s,keyEndSub,1);
+	bindKey(SDLK_d,keyReactAddSub,1);
 
 	setLastAction("Welcome");
 	return 0;
