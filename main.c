@@ -858,11 +858,13 @@ void loadSrt(const char* _filename){
 		getline(&_lastLine,&_lineSize,fp);
 		seekNextLine(fp);
 
-		// Make sentence
-		nList* _currentEntry = addnList(&timings);
-		_currentEntry->data = malloc(sizeof(struct sentence));
-		CASTDATA(_currentEntry)->startSample = timeToSamples(timeToMilliseconds(_numHours[0],_numMinutes[0],_numSeconds[0],_numMilliseconds[0]));
-		CASTDATA(_currentEntry)->endSample = timeToSamples(timeToMilliseconds(_numHours[1],_numMinutes[1],_numSeconds[1],_numMilliseconds[1]));
+		if (_numMilliseconds[0]!=-1){ // Subs with milliseconds of -1 indicate subs that didn;t have a sentence when saving
+			// Make sentence
+			nList* _currentEntry = addnList(&timings);
+			_currentEntry->data = malloc(sizeof(struct sentence));
+			CASTDATA(_currentEntry)->startSample = timeToSamples(timeToMilliseconds(_numHours[0],_numMinutes[0],_numSeconds[0],_numMilliseconds[0]));
+			CASTDATA(_currentEntry)->endSample = timeToSamples(timeToMilliseconds(_numHours[1],_numMinutes[1],_numSeconds[1],_numMilliseconds[1]));
+		}
 		// put sub in list
 		addnList(&_subList)->data = _lastLine;
 
@@ -1153,12 +1155,18 @@ int main (int argc, char** argv) {
 		int _currentIndex=1;
 		for (i=0;i<numRawSubs;++i){
 			if (!rawSkipped[i]){
-				if (_current==NULL){
-					printf("Unexpected end of sentences. Was on raw sub number %d\n",i);
-					break;
+				double _startTime;
+				double _endTime;
+				if (_current==NULL){ // If we're out of sentences, write -1 as an indication of that
+					//printf("Unexpected end of sentences. Was on raw sub number %d\n",i);
+					_startTime=-1;
+					_endTime=-1;
+				}else{
+					_startTime = samplesToTime(CASTDATA(_current)->startSample);
+					_endTime = samplesToTime(CASTDATA(_current)->endSample);
+					_current = _current->nextEntry;
 				}
-				writeSingleSrt(_currentIndex++,samplesToTime(CASTDATA(_current)->startSample),samplesToTime(CASTDATA(_current)->endSample),rawSubs[i],_outfp);
-				_current = _current->nextEntry;
+				writeSingleSrt(_currentIndex++,_startTime,_endTime,rawSubs[i],_outfp);
 			}
 		}
 		fclose(_outfp);
