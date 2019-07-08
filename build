@@ -1,1 +1,0 @@
-gcc -g -Wall main.c goodLinkedList.c stack.c -lSDLFontCache -lSDL2_ttf -lsndfile -lSDL2 -lm
