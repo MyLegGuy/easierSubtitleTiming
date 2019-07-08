@@ -38,7 +38,7 @@
 #define PLAY_SAMPLES  4096
 #define READBLOCKSIZE 8192
 // in PCM float
-#define SILENCE_THRESHOLD 300
+#define SILENCE_THRESHOLD .01
 // in milliseconds
 #define SENTENCE_SPACE_TIME 400
 #define MIN_SENTENCE_TIME SENTENCE_SPACE_TIME
@@ -104,7 +104,7 @@ void loadRawsubs(const char* _filename);
 SDL_Window* mainWindow;
 SDL_Renderer* mainWindowRenderer;
 
-int16_t** pcmData=NULL;
+float** pcmData=NULL;
 long pcmPlayPos=0;
 long totalSamples;
 int sampleRate;
@@ -219,7 +219,7 @@ void my_audio_callback(void *userdata, Uint8 *stream, int len) {
 		pauseMusic();
 	}else{
 		SF_INFO* _passedInfo = userdata;
-		int _possibleWriteSamples = (len/sizeof(int16_t))/2;
+		int _possibleWriteSamples = (len/sizeof(float))/2;
 		int _shouldWriteSamples;
 		if (pcmPlayPos+_possibleWriteSamples>totalSamples) {
 			_shouldWriteSamples=totalSamples-pcmPlayPos;
@@ -230,7 +230,7 @@ void my_audio_callback(void *userdata, Uint8 *stream, int len) {
 		for (i=0; i<_shouldWriteSamples; ++i) {
 			int j;
 			for (j=0; j<_passedInfo->channels; ++j) {
-				SDL_memcpy (&(stream[(i*_passedInfo->channels+j)*sizeof(int16_t)]), &(pcmData[j][pcmPlayPos]), sizeof(int16_t));
+				SDL_memcpy (&(stream[(i*_passedInfo->channels+j)*sizeof(float)]), &(pcmData[j][pcmPlayPos]), sizeof(float));
 			}
 			//stream[i*2*sizeof(float)] = pcmData[0][pcmPlayPos];
 			//stream[(i*2+1)*sizeof(float)] = pcmData[1][pcmPlayPos];
@@ -288,7 +288,7 @@ double getAvgPcm(long _sampleNumber) {
 	double _avg=0;
 	int i;
 	for (i=0; i<totalChannels; ++i) {
-		_avg+=abs(pcmData[i][_sampleNumber]);
+		_avg+=fabs(pcmData[i][_sampleNumber]);
 	}
 	return _avg/totalChannels;
 }
@@ -336,6 +336,7 @@ nList* findSentences(long _startSample, double _passedThreshold) {
 			}
 		}
 	}
+
 	return _ret;
 }
 
@@ -857,7 +858,7 @@ void loadSrt(const char* _filename){
 		getline(&_lastLine,&_lineSize,fp);
 		seekNextLine(fp);
 
-		if (_numMilliseconds[0]!=-1){ // Subs with milliseconds of -1 indicate subs that didn't have a sentence when saving
+		if (_numMilliseconds[0]!=-1){ // Subs with milliseconds of -1 indicate subs that didn;t have a sentence when saving
 			// Make sentence
 			nList* _currentEntry = addnList(&timings);
 			_currentEntry->data = malloc(sizeof(struct sentence));
@@ -993,16 +994,16 @@ int main (int argc, char** argv) {
 	printf("# Channels %d, Sample rate %d\n", _audioInfo.channels, _audioInfo.samplerate);
 
 	// Read entire file as pcm info big boy buffer
-	pcmData = malloc(sizeof(int16_t*)*_audioInfo.channels);
+	pcmData = malloc(sizeof(float*)*_audioInfo.channels);
 	for (i=0; i<_audioInfo.channels; ++i) {
-		pcmData[i] = malloc(sizeof(int16_t)*_audioInfo.frames);
+		pcmData[i] = malloc(sizeof(float)*_audioInfo.frames);
 	}
 	//
 	int _singleReadSamples = READBLOCKSIZE/_audioInfo.channels;
-	int16_t _readBuf[_singleReadSamples*2];
+	float _readBuf[_singleReadSamples*2];
 	int _wroteSamples=0;
 	int _lastReadCount;
-	while ((_lastReadCount = sf_readf_short (infile, _readBuf, _singleReadSamples)) > 0) {
+	while ((_lastReadCount = sf_readf_float (infile, _readBuf, _singleReadSamples)) > 0) {
 		for (i = 0; i < _lastReadCount; i++) {
 			int j;
 			for (j = 0; j < _audioInfo.channels; j++) {
@@ -1016,7 +1017,7 @@ int main (int argc, char** argv) {
 	// init
 	SDL_AudioSpec wav_spec; // the specs of our piece of music
 	wav_spec.freq = _audioInfo.samplerate;
-	wav_spec.format = AUDIO_S16SYS;
+	wav_spec.format = AUDIO_F32LSB;
 	wav_spec.channels = _audioInfo.channels;
 	wav_spec.samples = PLAY_SAMPLES;
 	wav_spec.callback = my_audio_callback;
@@ -1171,9 +1172,11 @@ int main (int argc, char** argv) {
 		fclose(_outfp);
 	}
 
+
 	// whatever the opposite of init is
 	FC_FreeFont(goodFont);
 	pauseMusic();
 	pthread_mutex_destroy(&audioPosLock);
+
 	return 0;
 }
