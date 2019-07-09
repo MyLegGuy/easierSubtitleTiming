@@ -344,6 +344,7 @@ struct nList* findSentences(long _startSample, int _passedMode) {
 	
 	// Main processing loop
 	int _filledOriginalSamples=0; // Number of unprocessed samples currently inside the _singleChannelOriginal
+	struct nList** _listAppender = initSpeedyAddnList(&_ret);
 	long s;
 	for (s=_startSample;s<totalSamples;){
 		int _outputNeeded=FVAD_SAMPLE_INPUT;
@@ -420,7 +421,7 @@ struct nList* findSentences(long _startSample, int _passedMode) {
 						_currentPart.endSample=_silenceStreakStart;
 						void* _destData = malloc(sizeof(struct sentence));
 						memcpy(_destData,&_currentPart,sizeof(struct sentence));
-						addnList(&_ret)->data=_destData;
+						_listAppender=speedyAddnList(_listAppender,_destData);						
 					}
 					//
 					_sentenceActive=0;
@@ -436,6 +437,7 @@ struct nList* findSentences(long _startSample, int _passedMode) {
 			}
 		}
 	}
+	endSpeedyAddnList(_listAppender);
 	src_delete(_converter);
 	fvad_free(_voiceState);
 	return _ret;
