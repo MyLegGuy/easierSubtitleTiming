@@ -1,6 +1,3 @@
-// do not steel
-// TODO - On the fly sentence recalculation starting from a certian point using different threshold
-// TODO - React add
 /*
 	UIdeas - 
 	Q - Rewind
@@ -17,6 +14,8 @@
 #include <float.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <fvad.h>
+#include <samplerate.h>
 
 #include <sndfile.h>
 #include <SDL2/SDL.h>
@@ -25,6 +24,19 @@
 
 #include "goodLinkedList.h"
 #include "stack.h"
+
+
+// Valid options: 10, 20, 30
+#define FVAD_TIME_INPUT 10
+// 8000, 16000, 32000, 48000
+// anything above 8000 is downscaled for you
+#define FVAD_RATE 8000
+// Calculate using FVAD_TIME_INPUT and FVAD_RATE
+// (FVAD_RATE*FVAD_TIME_INPUT)/(double)1000
+// For FVAD_TIME_INPUT 10 and FVAD_RATE 8000, values are: 80, 160, 240
+#define FVAD_SAMPLE_INPUT 80
+// 
+#define FVAD_USE_GREATER_CHANNEL 0
 
 // when looking for default font. Must end in a slash
 #define DEFAULTFONTDIR "/usr/share/fonts/TTF/"
@@ -37,8 +49,6 @@
 #define MAKERGBA(r,g,b,a) ((((a)&0xFF)<<24) | (((b)&0xFF)<<16) | (((g)&0xFF)<<8) | (((r)&0xFF)<<0))
 #define PLAY_SAMPLES  4096
 #define READBLOCKSIZE 8192
-// in PCM float
-#define SILENCE_THRESHOLD .01
 // in milliseconds
 #define SENTENCE_SPACE_TIME 400
 #define MIN_SENTENCE_TIME SENTENCE_SPACE_TIME
@@ -118,7 +128,7 @@ pthread_mutex_t audioPosLock;
 FC_Font* goodFont;
 int fontHeight;
 
-nList* timings;
+struct nList* timings;
 nStack* undoStack;
 
 int numRawSubs=0;
@@ -133,9 +143,15 @@ keyFunc* boundFuncs;
 int sizeActionHistory=0;
 int nextActionIndex=0; // Add the next one to this array index
 char** actionHistory=NULL;
-nList* lastActionMessages=NULL;
+struct nList* lastActionMessages=NULL;
 int addingSubIndex=-1;
 
+void showMessageEasy(const char* _passedMessage){
+	SDL_SetRenderDrawColor(mainWindowRenderer,0,0,0,255);
+	SDL_RenderClear(mainWindowRenderer);
+	FC_Draw(goodFont,mainWindowRenderer,0,0,_passedMessage);
+	SDL_RenderPresent(mainWindowRenderer);
+}
 void seekPast(FILE* fp, unsigned char _target){
 	while (1){
 		int _lastRead = fgetc(fp);
@@ -284,7 +300,7 @@ long getCurrentSample() {
 	}
 	return (((_currentTime-audioTimeReference)+audioTimeOther)/(double)1000)*sampleRate;
 }
-double getAvgPcm(long _sampleNumber) {
+double getAvgPcmVol(long _sampleNumber) {
 	double _avg=0;
 	int i;
 	for (i=0; i<totalChannels; ++i) {
@@ -292,51 +308,136 @@ double getAvgPcm(long _sampleNumber) {
 	}
 	return _avg/totalChannels;
 }
-nList* findSentences(long _startSample, double _passedThreshold) {
-	nList* _ret=NULL;
+struct nList* findSentences(long _startSample, int _passedMode) {
+	showMessageEasy("Finding sentences...");
+	struct nList* _ret=NULL;
+
+	Fvad* _voiceState = fvad_new();
+	fvad_set_mode(_voiceState,_passedMode);
+	fvad_set_sample_rate(_voiceState,FVAD_RATE);
+
+	int _lastError=0;
+	SRC_STATE* _converter = src_new(SRC_SINC_BEST_QUALITY,1,&_lastError);
+	if (_lastError!=0){
+		printf("SRC_STATE new error\n");
+		exit(1);
+	}
 
 	// Work with this, add it to the final list once it's good
 	struct sentence _currentPart;
-
 	char _sentenceActive=0;
-	long _silenceStreak=0;
-	long _silenceStreakStart=0;
+	long _silenceStreak;
+	long _silenceStreakStart;
+	
+	// Number of samples that go into the sample rate converter from the one channel original audio
+	int _unscaledInLength = (sampleRate*FVAD_TIME_INPUT)/(double)1000;
+	int _scaledOutLen = FVAD_SAMPLE_INPUT; // We need exactly this many for the voice detector
 
-	long i;
-	for (i=_startSample; i<totalSamples; ++i) {
-		if (_sentenceActive) {
-			if (getAvgPcm(i)<_passedThreshold) {
-				if (_silenceStreak==0) {
-					_silenceStreakStart=i;
+	float _scaledOutput[_scaledOutLen];
+	float _singleChannelOriginal[_unscaledInLength];
+
+	SRC_DATA _convertInfo;
+	_convertInfo.data_in=_singleChannelOriginal;
+	_convertInfo.input_frames=_unscaledInLength;
+	_convertInfo.src_ratio = FVAD_RATE/(double)sampleRate;
+	_convertInfo.end_of_input=0;
+	
+	// Main processing loop
+	int _filledOriginalSamples=0; // Number of unprocessed samples currently inside the _singleChannelOriginal
+	long s;
+	for (s=_startSample;s<totalSamples;){
+		int _outputNeeded=FVAD_SAMPLE_INPUT;
+		while(_outputNeeded!=0){
+			_convertInfo.output_frames=_outputNeeded;
+			_convertInfo.data_out = &(_scaledOutput[FVAD_SAMPLE_INPUT-_outputNeeded]);
+
+			// If we don't have enough samples left, just discard the last bit. It's probably not important at all.
+			if (s+(_unscaledInLength-_filledOriginalSamples)>=totalSamples){
+				s=totalSamples+1;
+				break;
+			}
+			// Fill up what's left in the _singleChannelOriginal
+			int i;
+			for (i=0;i<_unscaledInLength-_filledOriginalSamples;++i){
+				// Convert to mono. Required for fvad.
+				double _avg=0;
+				int c;
+				#if FVAD_USE_GREATER_CHANNEL==1
+				// Use only the greatest channel
+				for (c=0;c<totalChannels;++c){
+					if (fabs(pcmData[c][s])>fabs(_avg)){
+						_avg=pcmData[c][s];
+					}
 				}
+				#else
+				// Average all channels
+				for (c=0;c<totalChannels;++c){
+					_avg+=pcmData[c][s];
+				}
+				_avg=_avg/(double)totalChannels;
+				#endif
+				_singleChannelOriginal[i+_filledOriginalSamples]=_avg;
+				++s;
+			}
+			// Do downscale
+			_lastError = src_process(_converter,&_convertInfo);
+			if (_lastError!=0){
+				printf("%s\n",src_strerror(_lastError));
+				exit(1);
+			}
+			// Shift over the unused input data
+			_filledOriginalSamples = _unscaledInLength-_convertInfo.input_frames_used;
+			if (_filledOriginalSamples!=0){
+				memmove(_singleChannelOriginal,&(_singleChannelOriginal[_convertInfo.input_frames_used]),_filledOriginalSamples);
+			}
+			// Account for this
+			_outputNeeded-=_convertInfo.output_frames_gen;
+		}
+		if (s==totalSamples+1){ // Early break
+			break;
+		}
+		// From here we can assume that the output buffer is full
+		// We need the data in short to use with the voice detector
+		int16_t _shortVoiceIn[FVAD_SAMPLE_INPUT];
+		src_float_to_short_array(_scaledOutput,_shortVoiceIn,FVAD_SAMPLE_INPUT);
+		// Do
+		int _voiceOn = fvad_process(_voiceState,_shortVoiceIn,FVAD_SAMPLE_INPUT);
+		if (_sentenceActive){
+			if (!_voiceOn){
+				// Init silence streak if needed
+				if (_silenceStreak==0){
+					_silenceStreakStart=s;
+				}
+				//
 				++_silenceStreak;
-				// Sentence end
-				if (samplesToTime(_silenceStreak)>=SENTENCE_SPACE_TIME) {
+				// If the silence streak is too long, end the sentence
+				if (_silenceStreak*FVAD_TIME_INPUT>=SENTENCE_SPACE_TIME){
 					// Ensure that it isn't just an audio pop or something.
 					// It has to be an actual sentence
-					if (samplesToTime(_silenceStreakStart-_currentPart.startSample)>=MIN_SENTENCE_TIME) {
+					if (samplesToTime(_silenceStreakStart-_currentPart.startSample)>=MIN_SENTENCE_TIME){
 						//printf("Sentence from %d to %d: %f\n",_currentPart.startSample,i,samplesToTime(i-_currentPart.startSample));
 						// Put in list
 						_currentPart.endSample=_silenceStreakStart;
 						void* _destData = malloc(sizeof(struct sentence));
 						memcpy(_destData,&_currentPart,sizeof(struct sentence));
-						addnList(&_ret)->data = _destData;
+						addnList(&_ret)->data=_destData;
 					}
 					//
 					_sentenceActive=0;
 				}
-			} else {
+			}else{
 				_silenceStreak=0;
 			}
-		} else {
-			if (getAvgPcm(i)>=_passedThreshold) {
+		}else{
+			if (_voiceOn){
 				_sentenceActive=1;
 				_silenceStreak=0;
-				_currentPart.startSample=i;
+				_currentPart.startSample=s-FVAD_SAMPLE_INPUT;
 			}
 		}
 	}
-
+	src_delete(_converter);
+	fvad_free(_voiceState);
 	return _ret;
 }
 
@@ -348,8 +449,8 @@ void setLastAction(char* _actionName) {
 	}
 }
 
-nList* getCurrentSentence(long _currentSample, int* _retIndex){
-	nList* _currentEntry = timings;
+struct nList* getCurrentSentence(long _currentSample, int* _retIndex){
+	struct nList* _currentEntry = timings;
 	int i;
 	for (i=0;_currentEntry->nextEntry!=NULL;++i){
 		if (CASTDATA(_currentEntry->nextEntry)->startSample>_currentSample){ // If we're not at the next sample yet
@@ -362,9 +463,9 @@ nList* getCurrentSentence(long _currentSample, int* _retIndex){
 	}
 	return _currentEntry;
 }
-nList* getBeforeCurrentSentence(long _currentSample, int* _retIndex){
-	nList* _currentEntry = timings;
-	nList* _prevEntry=NULL;
+struct nList* getBeforeCurrentSentence(long _currentSample, int* _retIndex){
+	struct nList* _currentEntry = timings;
+	struct nList* _prevEntry=NULL;
 	int i;
 	for (i=-1;_currentEntry->nextEntry!=NULL;++i){
 		if (CASTDATA(_currentEntry->nextEntry)->startSample>_currentSample){ // If we're not at the next sample yet
@@ -394,7 +495,7 @@ void drawSentences(int _maxWidth, long _currentSample){
 		_currentX = _maxWidth/2 - samplesToTime(_highlightSample)/TIMEPERPIXEL;
 		_currentSample=0;
 	}
-	nList* _currentEntry = getCurrentSentence(_currentSample,NULL);
+	struct nList* _currentEntry = getCurrentSentence(_currentSample,NULL);
 	signed int _lastDrawXEnd=-20; // Where the last rectangle ended
 	while(_currentX<_maxWidth) {
 		struct sentence* _currentSentence = _currentEntry->data;
@@ -460,13 +561,13 @@ void removeNewline(char* _toRemove){
 	}
 }
 
-void lowStitchForwards(nList* _startHere, char* _message){
+void lowStitchForwards(struct nList* _startHere, char* _message){
 	// Undo data
 	long _oldEnd = CASTDATA(_startHere)->endSample;
 	long _oldStart = CASTDATA(_startHere->nextEntry)->startSample;
 
 	CASTDATA(_startHere)->endSample=CASTDATA(_startHere->nextEntry)->endSample;
-	nList* _tempHold = _startHere->nextEntry->nextEntry;
+	struct nList* _tempHold = _startHere->nextEntry->nextEntry;
 	free(_startHere->nextEntry->data);
 	free(_startHere->nextEntry);
 	_startHere->nextEntry=_tempHold;
@@ -512,8 +613,8 @@ void resizeActionHistory(int _windowHeight){
 
 // passed is longHolder2 with item1 being the end of the the first one and item2 being the start of the second one
 void undoStitch(long _currentSample, void* _passedData){
-	nList* _currentSentence = getCurrentSentence(_currentSample,NULL);
-	nList* _undoneDeleted = malloc(sizeof(nList));
+	struct nList* _currentSentence = getCurrentSentence(_currentSample,NULL);
+	struct nList* _undoneDeleted = malloc(sizeof(struct nList));
 	_undoneDeleted->data = malloc(sizeof(struct sentence));
 	CASTDATA(_undoneDeleted)->startSample = ((struct longHolder2*)(_passedData))->item2;
 	CASTDATA(_undoneDeleted)->endSample = CASTDATA(_currentSentence)->endSample;
@@ -527,8 +628,8 @@ void undoSkip(long _currentSample, void* _passedData){
 }
 // No data
 void undoChop(long _currentSample, void* _passedData){
-	nList* _currentEntry = getCurrentSentence(_currentSample,NULL);
-	nList* _freeThis = _currentEntry->nextEntry;
+	struct nList* _currentEntry = getCurrentSentence(_currentSample,NULL);
+	struct nList* _freeThis = _currentEntry->nextEntry;
 	CASTDATA(_currentEntry)->endSample = CASTDATA(_freeThis)->endSample;
 	_currentEntry->nextEntry = _freeThis->nextEntry;
 	free(_freeThis->data);
@@ -536,20 +637,20 @@ void undoChop(long _currentSample, void* _passedData){
 }
 // data is longHolder2 with start and end
 void undoDeleteSentence(long _currentSample, void* _passedData){
-	nList* _newEntry = malloc(sizeof(nList));
+	struct nList* _newEntry = malloc(sizeof(struct nList));
 	_newEntry->data = malloc(sizeof(struct sentence));
 	CASTDATA(_newEntry)->startSample = ((struct longHolder2*)_passedData)->item1;
 	CASTDATA(_newEntry)->endSample = ((struct longHolder2*)_passedData)->item2;
 
-	// insertion sort
-	nList* _prevList=NULL;
+	// insert sorted
+	struct nList* _prevList=NULL;
 	ITERATENLIST(timings,{
-		//_currentnList
-		if (CASTDATA(_currentnList)->startSample>CASTDATA(_newEntry)->endSample){
-			_newEntry->nextEntry=_currentnList;
+		//_curnList
+		if (CASTDATA(_curnList)->startSample>CASTDATA(_newEntry)->endSample){
+			_newEntry->nextEntry=_curnList;
 			break;
 		}
-		_prevList = _currentnList;
+		_prevList = _curnList;
 	});
 
 	if (_prevList==NULL){
@@ -593,7 +694,7 @@ void writeSingleSrt(int _index, long _startMilli, double _endMilli, char* _sub, 
 /////////////////////////////
 
 void keyStitchForward(long _currentSample){
-	nList* _currentSentence = getCurrentSentence(_currentSample,NULL);
+	struct nList* _currentSentence = getCurrentSentence(_currentSample,NULL);
 	if (_currentSentence->nextEntry==NULL){
 		return;
 	}
@@ -636,13 +737,13 @@ void keyMegaSeekBack(long _currentSample){
 	seekAudioMilli(MEGASEEK*-1);
 }
 void keySeekBackSentence(long _currentSample){
-	nList* _possibleEntry = getBeforeCurrentSentence(_currentSample,NULL);
+	struct nList* _possibleEntry = getBeforeCurrentSentence(_currentSample,NULL);
 	if (_possibleEntry!=NULL){
 		seekAudioSamplesExact(CASTDATA(_possibleEntry)->startSample);
 	}
 }
 void keySeekForwardSentence(long _currentSample){
-	nList* _possibleNext = getCurrentSentence(_currentSample,NULL)->nextEntry;
+	struct nList* _possibleNext = getCurrentSentence(_currentSample,NULL)->nextEntry;
 	if (_possibleNext!=NULL){
 		seekAudioSamplesExact(CASTDATA(_possibleNext)->startSample);
 	}
@@ -665,17 +766,17 @@ void keySkip(long _currentSample){
 	addStack(&undoStack,makeUndoEntry(_messageBuff,undoSkip,_dataPointer,_currentSample,1));
 }
 void keyChop(long _currentSample){
-	nList* _currentSentence = getCurrentSentence(_currentSample,NULL);
+	struct nList* _currentSentence = getCurrentSentence(_currentSample,NULL);
 	if (_currentSample>=CASTDATA(_currentSentence)->endSample){
 		setLastAction("Can't chop, too far");
 		return;
 	}
-	nList* _newEntry = malloc(sizeof(nList));
+	struct nList* _newEntry = malloc(sizeof(struct nList));
 	_newEntry->data = malloc(sizeof(struct sentence));
 	CASTDATA(_newEntry)->startSample=_currentSample+1;
 	CASTDATA(_newEntry)->endSample=CASTDATA(_currentSentence)->endSample;
 	CASTDATA(_currentSentence)->endSample=_currentSample;
-	nList* _temp = _currentSentence->nextEntry;
+	struct nList* _temp = _currentSentence->nextEntry;
 	_currentSentence->nextEntry = _newEntry;
 	_newEntry->nextEntry = _temp;
 	setLastAction("Chop");
@@ -701,14 +802,14 @@ void keyPrintDivider(long _currentSample){
 	setLastAction(_messageBuff);
 }
 void keyDeleteSentence(long _currentSample){
-	nList* _previousEntry = getBeforeCurrentSentence(_currentSample,NULL);
-	nList* _currentEntry;
+	struct nList* _previousEntry = getBeforeCurrentSentence(_currentSample,NULL);
+	struct nList* _currentEntry;
 	if (_previousEntry==NULL){
 		_currentEntry=timings;
 	}else{
 		_currentEntry=_previousEntry->nextEntry;
 	}
-	nList* _replacement = _currentEntry->nextEntry;
+	struct nList* _replacement = _currentEntry->nextEntry;
 	long _oldStart = CASTDATA(_currentEntry)->startSample;
 	long _oldEnd = CASTDATA(_currentEntry)->endSample;
 	free(_currentEntry->data);
@@ -722,50 +823,59 @@ void keyDeleteSentence(long _currentSample){
 	setLastAction("Del sentence");
 }
 void keyRecalculateSentences(long _currentSample){
-
-	nList* _currentSentence = getBeforeCurrentSentence(_currentSample,NULL);
+	struct nList* _currentSentence = getBeforeCurrentSentence(_currentSample,NULL);
 	if (_currentSentence!=NULL && _currentSentence->nextEntry!=NULL){
 		pauseMusic();
-		printf("(Default is 1)\nInput 1-100:\n");
-		size_t _lineSize=0;
-		char* _lastLine=NULL;
-		SDL_SetRenderDrawColor(mainWindowRenderer,0,0,0,255);
-		SDL_RenderClear(mainWindowRenderer);
-		FC_Draw(goodFont, mainWindowRenderer, 0, 0, "Waiting for stdin");
-		SDL_RenderPresent(mainWindowRenderer);
-		if (getline(&_lastLine,&_lineSize,stdin)==-1){
-			setLastAction("Input error");
-		}else{
-			int _possibleInput = atoi(_lastLine);
-			if (_possibleInput==0){
-				printf("Invalid input\n");
-			}else{
-				freenList(_currentSentence->nextEntry, 1);
-				_currentSentence->nextEntry = findSentences(CASTDATA(_currentSentence)->endSample,_possibleInput/(double)100);
-				setLastAction("Recalculate sentences");
+		int _inputResult=-1;
+		while(_inputResult==-1){
+			SDL_Event e;
+			while(SDL_PollEvent(&e)!=0){
+				if (e.type==SDL_KEYDOWN){
+					switch(e.key.keysym.sym){
+					case SDLK_0:
+						_inputResult=0;
+						break;
+					case SDLK_1:
+						_inputResult=1;
+						break;
+					case SDLK_2:
+						_inputResult=2;
+						break;
+					case SDLK_3:
+						_inputResult=3;
+						break;
+					case SDLK_ESCAPE:
+						_inputResult=-2;
+						break;
+					}
+				}
 			}
+			showMessageEasy("vad mode:\n0 (\"quality\"),\n1 (\"low bitrate\"),\n2 (\"aggressive\"),\n3 (\"very aggressive\")\n<esc> (\"cancel\")");
 		}
-		free(_lastLine);
-
+		if (_inputResult!=-2){
+			freenList(_currentSentence->nextEntry, 1);
+			_currentSentence->nextEntry = findSentences(CASTDATA(_currentSentence)->endSample,_inputResult);
+			setLastAction("Recalculate sentences");
+		}
 		unpauseMusic();
 	}
 }
 void keyAddSub(long _currentSample){
-	nList* _newEntry = malloc(sizeof(nList));
+	struct nList* _newEntry = malloc(sizeof(struct nList));
 	_newEntry->data = malloc(sizeof(struct sentence));
 	CASTDATA(_newEntry)->startSample=_currentSample;
 	CASTDATA(_newEntry)->endSample=_currentSample+1;
 
-	nList* _prevList=NULL;
+	struct nList* _prevList=NULL;
 	int i=0;
 	ITERATENLIST(timings,{
-		if (_currentSample<CASTDATA(_currentnList)->endSample){
+		if (_currentSample<CASTDATA(_curnList)->endSample){
 			break;
 		}
-		_prevList=_currentnList;
+		_prevList=_curnList;
 		++i;
 	});
-	nList* _tempHold = _prevList->nextEntry;
+	struct nList* _tempHold = _prevList->nextEntry;
 	_prevList->nextEntry = _newEntry;
 	_newEntry->nextEntry = _tempHold;
 
@@ -841,7 +951,7 @@ void loadRawsubs(const char* _filename){
 	rawSkipped = recalloc(rawSkipped,sizeof(char)*numRawSubs,sizeof(char)*_oldNumRaw);
 }
 void loadSrt(const char* _filename){
-	nList* _subList=NULL;
+	struct nList* _subList=NULL;
 	FILE* fp = fopen(_filename,"rb");
 	numRawSubs=0;
 	while(!feof(fp)){
@@ -860,7 +970,7 @@ void loadSrt(const char* _filename){
 
 		if (_numMilliseconds[0]!=-1){ // Subs with milliseconds of -1 indicate subs that didn;t have a sentence when saving
 			// Make sentence
-			nList* _currentEntry = addnList(&timings);
+			struct nList* _currentEntry = addnList(&timings);
 			_currentEntry->data = malloc(sizeof(struct sentence));
 			CASTDATA(_currentEntry)->startSample = timeToSamples(timeToMilliseconds(_numHours[0],_numMinutes[0],_numSeconds[0],_numMilliseconds[0]));
 			CASTDATA(_currentEntry)->endSample = timeToSamples(timeToMilliseconds(_numHours[1],_numMinutes[1],_numSeconds[1],_numMilliseconds[1]));
@@ -874,7 +984,7 @@ void loadSrt(const char* _filename){
 	rawSubs = malloc(sizeof(char*)*numRawSubs);
 	int i=0;
 	ITERATENLIST(_subList,{
-		rawSubs[i++] = _currentnList->data;
+		rawSubs[i++] = _curnList->data;
 	});
 	freenList(_subList,0);
 
@@ -977,6 +1087,8 @@ int main (int argc, char** argv) {
 		return 1;
 	}
 
+	showMessageEasy("Loading audio...");
+	
 	// init audio
 	SNDFILE* infile = NULL;
 	SF_INFO	_audioInfo;
@@ -1035,7 +1147,11 @@ int main (int argc, char** argv) {
 		rawSkipped = calloc(1,sizeof(char)*numRawSubs);
 	}else{
 		loadRawsubs(plainSubsFilename);
-		timings = findSentences(0,SILENCE_THRESHOLD);
+		timings = findSentences(0,3);
+		if (timings==NULL){
+			printf("Failed to find sentences.\n");
+			exit(1);
+		}
 	}
 
 	unpauseMusic();
@@ -1081,7 +1197,7 @@ int main (int argc, char** argv) {
 
 		// Explicitly placed after key events so it can account for new sentences being made
 		int _currentIndex;
-		nList* _currentEntry = getCurrentSentence(_currentSample,&_currentIndex);
+		struct nList* _currentEntry = getCurrentSentence(_currentSample,&_currentIndex);
 		struct sentence* _currentSentence = _currentEntry->data;
 
 		if (addingSubIndex!=-1){
@@ -1151,7 +1267,7 @@ int main (int argc, char** argv) {
 	if (_doWriteSrt){
 		printf("Writing srt...\n");
 		FILE* _outfp = fopen(_srtOut,"wb");
-		nList* _current = timings;
+		struct nList* _current = timings;
 		int _currentIndex=1;
 		for (i=0;i<numRawSubs;++i){
 			if (!rawSkipped[i]){

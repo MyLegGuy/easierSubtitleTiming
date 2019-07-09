@@ -1,7 +1,7 @@
 src = $(wildcard *.c)
 obj = $(src:.c=.o)
 
-LDFLAGS = -lSDLFontCache -lSDL2_ttf -lsndfile -lSDL2 -lm
+LDFLAGS = -lSDLFontCache -lSDL2_ttf -lsndfile -lSDL2 -lsamplerate -lfvad -lm
 CFLAGS = -g -Wall
 OUTNAME = a.out
 

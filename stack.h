@@ -1,7 +1,7 @@
 #ifndef HEADERSTACKINCLUDED
 #define HEADERSTACKINCLUDED
 
-typedef nList nStack;
+typedef struct nList nStack;
 
 void addStack(nStack** _passedStack, void* _data);
 void* popStack(nStack** _passedStack);
