@@ -235,7 +235,7 @@ void my_audio_callback(void *userdata, Uint8 *stream, int len) {
 		pauseMusic();
 	}else{
 		SF_INFO* _passedInfo = userdata;
-		int _possibleWriteSamples = (len/sizeof(float))/2;
+		int _possibleWriteSamples = (len/sizeof(float))/_passedInfo->channels;
 		int _shouldWriteSamples;
 		if (pcmPlayPos+_possibleWriteSamples>totalSamples) {
 			_shouldWriteSamples=totalSamples-pcmPlayPos;
