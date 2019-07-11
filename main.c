@@ -14,6 +14,9 @@
 #include <float.h>
 #include <pthread.h>
 #include <unistd.h>
+// Replace this with https://gist.github.com/panzi/6856583 if not Linux
+#include <endian.h>
+
 #include <fvad.h>
 #include <samplerate.h>
 
@@ -146,6 +149,17 @@ char** actionHistory=NULL;
 struct nList* lastActionMessages=NULL;
 int addingSubIndex=-1;
 
+// Write in little endian
+size_t goodWriteu64(FILE* fp, uint64_t _writeThis){
+	uint64_t _converted = htole64(_writeThis);
+	return fwrite(&_converted,sizeof(uint64_t),1,fp);
+}
+// Read a little endian 64
+size_t goodReadu64(FILE* fp){
+	uint64_t _read;
+	fread(&_read,sizeof(uint64_t),1,fp);
+	return le64toh(_read);
+}
 void showMessageEasy(const char* _passedMessage){
 	SDL_SetRenderDrawColor(mainWindowRenderer,0,0,0,255);
 	SDL_RenderClear(mainWindowRenderer);
@@ -442,7 +456,6 @@ struct nList* findSentences(long _startSample, int _passedMode) {
 	fvad_free(_voiceState);
 	return _ret;
 }
-
 void setLastAction(char* _actionName) {
 	free(actionHistory[nextActionIndex]);
 	actionHistory[nextActionIndex] = strdup(_actionName);
@@ -450,7 +463,6 @@ void setLastAction(char* _actionName) {
 		nextActionIndex=0;
 	}
 }
-
 struct nList* getCurrentSentence(long _currentSample, int* _retIndex){
 	struct nList* _currentEntry = timings;
 	int i;
@@ -486,7 +498,6 @@ int getCurrentSentenceIndex(long _currentSample){
 	getCurrentSentence(_currentSample,&_ret);
 	return _ret;
 }
-
 // why is this in a method
 void drawSentences(int _maxWidth, long _currentSample){
 	int _currentX=0;
@@ -537,8 +548,6 @@ void drawSentences(int _maxWidth, long _currentSample){
 		}
 	}
 }
-
-
 void bindKey(SDL_Keycode _bindThis, keyFunc _bindFunc, char _modStatus){
 	totalKeysBound++;
 	boundFuncs = realloc(boundFuncs, sizeof(keyFunc)*totalKeysBound);
@@ -548,7 +557,6 @@ void bindKey(SDL_Keycode _bindThis, keyFunc _bindFunc, char _modStatus){
 	boundFuncs[totalKeysBound-1] = _bindFunc;
 	boundKeyModStatus[totalKeysBound-1] = _modStatus;
 }
-
 void removeNewline(char* _toRemove){
 	int _cachedStrlen = strlen(_toRemove);
 	if (_cachedStrlen==0){
@@ -562,7 +570,6 @@ void removeNewline(char* _toRemove){
 		}
 	}
 }
-
 void lowStitchForwards(struct nList* _startHere, char* _message){
 	// Undo data
 	long _oldEnd = CASTDATA(_startHere)->endSample;
@@ -577,7 +584,6 @@ void lowStitchForwards(struct nList* _startHere, char* _message){
 	setLastAction(_message);
 	addStack(&undoStack,makeUndoEntry(_message,undoStitch,newLongHolder2(_oldEnd,_oldStart),CASTDATA(_startHere)->startSample,0));
 }
-
 int correctSentenceIndex(int _passedIndex){
 	if (_passedIndex>=numRawSubs){
 		return numRawSubs-1;
@@ -593,7 +599,6 @@ int correctSentenceIndex(int _passedIndex){
 	}
 	return _passedIndex;
 }
-
 // realloc, but new memory is zeroed out
 void* recalloc(void* _oldBuffer, int _newSize, int _oldSize){
 	void* _newBuffer = realloc(_oldBuffer,_newSize);
@@ -603,16 +608,13 @@ void* recalloc(void* _oldBuffer, int _newSize, int _oldSize){
 	}
 	return _newBuffer;
 }
-
 void resizeActionHistory(int _windowHeight){
 	int _oldMax = sizeActionHistory;
 	sizeActionHistory = _windowHeight/fontHeight;
 	actionHistory = recalloc(actionHistory,sizeof(char*)*sizeActionHistory,sizeof(char*)*_oldMax);
 	nextActionIndex = wrapNum(nextActionIndex,0,sizeActionHistory-1);
 }
-
 /////////////////////////////
-
 // passed is longHolder2 with item1 being the end of the the first one and item2 being the start of the second one
 void undoStitch(long _currentSample, void* _passedData){
 	struct nList* _currentSentence = getCurrentSentence(_currentSample,NULL);
@@ -661,7 +663,6 @@ void undoDeleteSentence(long _currentSample, void* _passedData){
 		_prevList->nextEntry = _newEntry;
 	}
 }
-
 long timeToMilliseconds(int _hours, int _mins, int _secs, int _milliseconds){
 	return (_hours*3600+_mins*60+_secs)*1000+_milliseconds;
 }
@@ -692,9 +693,7 @@ void writeSingleSrt(int _index, long _startMilli, double _endMilli, char* _sub, 
 
 	fwrite(complete,strlen(complete),1,fp);
 }
-
 /////////////////////////////
-
 void keyStitchForward(long _currentSample){
 	struct nList* _currentSentence = getCurrentSentence(_currentSample,NULL);
 	if (_currentSentence->nextEntry==NULL){
@@ -900,9 +899,9 @@ void keyReloadPlain(long _currentSample){
 	rawSubs=NULL;
 	loadRawsubs(plainSubsFilename);
 }
-
+void keySave(){
+}
 /////////////////////////////
-
 char* getFontFilename(){
 	FILE* _outStream = popen(GETFONTCOMMAND,"r");
 	if (_outStream==NULL){
@@ -929,7 +928,6 @@ char* getFontFilename(){
 		return _fullFilename;
 	}
 }
-
 void loadRawsubs(const char* _filename){
 	FILE* fp = fopen(_filename,"rb");
 	size_t _lineSize=0;
@@ -970,13 +968,12 @@ void loadSrt(const char* _filename){
 		getline(&_lastLine,&_lineSize,fp);
 		seekNextLine(fp);
 
-		if (_numMilliseconds[0]!=-1){ // Subs with milliseconds of -1 indicate subs that didn;t have a sentence when saving
-			// Make sentence
-			struct nList* _currentEntry = addnList(&timings);
-			_currentEntry->data = malloc(sizeof(struct sentence));
-			CASTDATA(_currentEntry)->startSample = timeToSamples(timeToMilliseconds(_numHours[0],_numMinutes[0],_numSeconds[0],_numMilliseconds[0]));
-			CASTDATA(_currentEntry)->endSample = timeToSamples(timeToMilliseconds(_numHours[1],_numMinutes[1],_numSeconds[1],_numMilliseconds[1]));
-		}
+		// Make sentence
+		struct nList* _currentEntry = addnList(&timings);
+		_currentEntry->data = malloc(sizeof(struct sentence));
+		CASTDATA(_currentEntry)->startSample = timeToSamples(timeToMilliseconds(_numHours[0],_numMinutes[0],_numSeconds[0],_numMilliseconds[0]));
+		CASTDATA(_currentEntry)->endSample = timeToSamples(timeToMilliseconds(_numHours[1],_numMinutes[1],_numSeconds[1],_numMilliseconds[1]));
+		
 		// put sub in list
 		addnList(&_subList)->data = _lastLine;
 
@@ -992,13 +989,56 @@ void loadSrt(const char* _filename){
 
 	fclose(fp);
 }
-
-char init(int argc, char** argv, const char* _manualFontFilename) {
-	if (pthread_mutex_init(&audioPosLock,NULL)!=0) {
+void loadTimings(const char* _filename){
+	timings=NULL;
+	struct nList** _listAdder = initSpeedyAddnList(&timings);
+	FILE* fp = fopen(_filename,"rb");
+	long _totalSentences = goodReadu64(fp);
+	long i;
+	for (i=0;i<_totalSentences;++i){
+		struct sentence* _newSentence = malloc(sizeof(struct sentence));
+		_newSentence->startSample=goodReadu64(fp);
+		_newSentence->endSample=goodReadu64(fp);
+		_listAdder = speedyAddnList(_listAdder,_newSentence);
+	}
+	fclose(fp);
+	endSpeedyAddnList(_listAdder);
+}
+void saveData(const char* _srtOut, const char* _timingsOut){
+	if (_timingsOut!=NULL){
+		printf("Writing timings to %s\n",_timingsOut);
+		FILE* fp = fopen(_timingsOut,"wb");
+		goodWriteu64(fp,nListLen(timings));
+		ITERATENLIST(timings,{
+				goodWriteu64(fp,CASTDATA(_curnList)->startSample);
+				goodWriteu64(fp,CASTDATA(_curnList)->endSample);
+			});
+		fclose(fp);
+	}
+	if (_srtOut!=NULL){
+		printf("Writing srt to %s\n",_srtOut);
+		FILE* _outfp = fopen(_srtOut,"wb");
+		struct nList* _curTiming = timings;
+		int _currentIndex=1;
+		int i;
+		for (i=0;i<numRawSubs && _curTiming!=NULL;++i){
+			if (!rawSkipped[i]){
+				double _startTime = samplesToTime(CASTDATA(_curTiming)->startSample);
+				double _endTime = samplesToTime(CASTDATA(_curTiming)->endSample);
+				_curTiming = _curTiming->nextEntry;
+				writeSingleSrt(_currentIndex++,_startTime,_endTime,rawSubs[i],_outfp);
+			}
+		}
+		fclose(_outfp);
+	}
+}
+char init(int argc, char** argv, char** _srtOutFilename, char** _timingsOutFilename) {
+	*_srtOutFilename=NULL;
+	*_timingsOutFilename=NULL;
+	if (pthread_mutex_init(&audioPosLock,NULL)!=0) { // TODO - Replace this with SDL mutex?
 		printf("mutex init failed");
 		return 1;
 	}
-
 	if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO) < 0) {
 		printf("fail open sdl");
 		return 1;
@@ -1006,8 +1046,66 @@ char init(int argc, char** argv, const char* _manualFontFilename) {
 	mainWindow = SDL_CreateWindow( "easierTiming", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 640, 480, SDL_WINDOW_SHOWN); //SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
 	mainWindowRenderer = SDL_CreateRenderer( mainWindow, -1, SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_ACCELERATED);
 
+	// Start loading audio to get data
+	char* _soundIn=argv[1];
+	SNDFILE* infile = NULL;
+	SF_INFO* _audioInfo = malloc(sizeof(SF_INFO));
+	memset (_audioInfo, 0, sizeof (SF_INFO));
+	if ((infile = sf_open (_soundIn, SFM_READ, _audioInfo)) == NULL) {
+		printf ("Not able to open input file %s.\n", _soundIn);
+		printf("%s\n",sf_strerror (NULL));
+		return 1;
+	}
+	totalSamples=_audioInfo->frames;
+	sampleRate=_audioInfo->samplerate;
+	totalChannels=_audioInfo->channels;
+	printf("# Channels %d, Sample rate %d\n", _audioInfo->channels, _audioInfo->samplerate);
+	
 	goodFont = FC_CreateFont();
-	if (_manualFontFilename==NULL){
+	char _fontLoaded=0;
+	char _timingsLoaded=0;
+	char _plainsubsLoaded=0;
+	int i;
+	for (i=2;i<argc;++i){
+		if (strcmp(argv[i],"--font")==0){
+			FC_LoadFont(goodFont, mainWindowRenderer, argv[++i], FONTSIZE, FC_MakeColor(255,255,255,255), TTF_STYLE_NORMAL);
+			_fontLoaded=1;
+		}else if (strcmp(argv[i],"--timeIn")==0){
+			if (!_timingsLoaded){
+				_timingsLoaded=1;
+				loadTimings(argv[++i]);
+			}else{
+				printf("Too many timings loaders (--timeIn)\n");
+			}
+		}else if (strcmp(argv[i],"--plain")==0){
+			if (!_plainsubsLoaded){
+				_plainsubsLoaded=1;
+				loadRawsubs(argv[++i]);
+			}else{
+				printf("Too many plain loaders (--plain)\n");
+			}
+		}else if (strcmp(argv[i],"--srtIn")==0){
+			if (!_plainsubsLoaded && !_timingsLoaded){
+				_plainsubsLoaded=1;
+				_timingsLoaded=1;
+				loadSrt(argv[++i]);
+				rawSkipped = calloc(1,sizeof(char)*numRawSubs);
+			}else{
+				printf("Timings or plain already loaded (--srtIn)\n");
+			}
+		}else if (strcmp(argv[i],"--srtOut")==0){
+			*_srtOutFilename=argv[++i];
+		}else if (strcmp(argv[i],"--timingsOut")==0){
+			*_timingsOutFilename=argv[++i];
+		}
+	}
+	if (!_plainsubsLoaded){
+		printf("Need to supply a [sub src]\n");
+		return 1;
+	}
+
+	// Get font filename if one wasn't passed
+	if (!_fontLoaded){
 		char* _fontFilename = getFontFilename();
 		if (_fontFilename==NULL){
 			printf("Could not find font filename. Pass one with arguments.\n");
@@ -1015,11 +1113,52 @@ char init(int argc, char** argv, const char* _manualFontFilename) {
 		}
 		FC_LoadFont(goodFont, mainWindowRenderer, _fontFilename, FONTSIZE, FC_MakeColor(255,255,255,255), TTF_STYLE_NORMAL);
 		free(_fontFilename);
-	}else{
-		FC_LoadFont(goodFont, mainWindowRenderer, _manualFontFilename, FONTSIZE, FC_MakeColor(255,255,255,255), TTF_STYLE_NORMAL);
 	}
 	fontHeight = FC_GetLineHeight(goodFont);
 
+	// Finish reading all audio into big boy buffer
+	showMessageEasy("Loading audio...");
+	pcmData = malloc(sizeof(float*)*_audioInfo->channels);
+	for (i=0; i<_audioInfo->channels; ++i) {
+		pcmData[i] = malloc(sizeof(float)*_audioInfo->frames);
+	}
+	int _singleReadSamples = READBLOCKSIZE/_audioInfo->channels;
+	float _readBuf[_singleReadSamples*2];
+	int _wroteSamples=0;
+	int _lastReadCount;
+	while ((_lastReadCount = sf_readf_float (infile, _readBuf, _singleReadSamples)) > 0) {
+		for (i = 0; i < _lastReadCount; i++) {
+			int j;
+			for (j = 0; j < _audioInfo->channels; j++) {
+				pcmData[j][_wroteSamples] = _readBuf[i*_audioInfo->channels+j];
+			}
+			++_wroteSamples;
+		}
+	}
+	sf_close (infile);
+
+	// Tell SDL to play audio
+	SDL_AudioSpec wav_spec; // the specs of our piece of music
+	wav_spec.freq = _audioInfo->samplerate;
+	wav_spec.format = AUDIO_F32LSB;
+	wav_spec.channels = _audioInfo->channels;
+	wav_spec.samples = PLAY_SAMPLES;
+	wav_spec.callback = my_audio_callback;
+	wav_spec.userdata = _audioInfo;
+	int _gottenAudioId = SDL_OpenAudio(&wav_spec, NULL);
+	if ( _gottenAudioId < 0 ) {
+		printf("Couldn't open audio: %s\n", SDL_GetError());
+		return 1;
+	}
+	
+	// Keep this after font and song loading so it shows the loading message
+	if (!_timingsLoaded){
+		if ((timings = findSentences(0,3))==NULL){
+			printf("Failed to find sentences\n");
+			return 1;
+		}
+	}
+	
 	// Normally, the SDL window resize will be called on start, but do this explicitly just in case.
 	int _maxHeight;
 	SDL_GetWindowSize(mainWindow,NULL,&_maxHeight);
@@ -1043,6 +1182,7 @@ char init(int argc, char** argv, const char* _manualFontFilename) {
 	bindKey(SDLK_x,keyDeleteSentence,0);
 	bindKey(SDLK_r,keyRecalculateSentences,0);
 	bindKey(SDLK_F5,keyReloadPlain,1);
+	bindKey(SDLK_F1,keySave,1);
 
 	bindKey(SDLK_a,keyAddSub,1);
 	bindKey(SDLK_s,keyEndSub,1);
@@ -1051,115 +1191,33 @@ char init(int argc, char** argv, const char* _manualFontFilename) {
 	setLastAction("Welcome");
 	return 0;
 }
-
 int main (int argc, char** argv) {
-	if (argc<3){
+	if (argc<2){
 		printf("Usage:\n");
-		printf("%s <sound in> <srt out>\n",argv[0]);
-		printf("Stuff you can append to the end:\n");
-		printf("--font\t<ttf filename>\n--continue\tAllows to continue from srt\n--plain\t<plain sub file>\n--readonly\n\nNote that you must pass plain subs or continue from srt.\n");
+		printf("%s <sound in>\n",argv[0]);
+		printf("Stuff you can append to the end:\n"
+			   "--font <ttf filename>\n"
+			   "--timeIn <raw timings in>\n\t[timing src] Load all raw timings from this file.\n"
+			   "--plain <plain sub file>\n\t[sub src] Read plain text subs from this file line by line.\n"
+			   "--srtIn <srt path>\n\t[sub src][timing src] Loads timings and plain subs from an srt. Does not include timings that didn't have a sub to go with, therefor this is not suitable for continuing work.\n"
+
+			   "--srtOut <srt path>\n\tPath to write the final srt product. Not a substitute for --timingsOut\n"
+			   "--timingsOut <raw timings out>\n\tPath to file where all raw timings will be saved. If you want to continue work later, load this file along with plain subs.\n"
+			   
+			   "\nYou most supply exactly one [sub src].\nIf you don't supply one [timing src], new timings will be generated for you.\nIt is highly recommended you supply both --timingsOut and --srtOut.\n");
 		return 1;
 	}
-	// Need to parse args here so we can use local variables
-	char _doWriteSrt=1;
-	char* _overrideFont=NULL;
-	char _isContinue=0;
+	char* _timingsOut=NULL;
 	char* _srtOut=NULL;
-	char* _soundIn=NULL;
-	_soundIn=argv[1];
-	_srtOut=argv[2];
-	int i;
-	for (i=3;i<argc;++i){
-		if (strcmp(argv[i],"--font")==0){
-			_overrideFont = argv[++i];
-		}else if (strcmp(argv[i],"--continue")==0){
-			_isContinue=1;
-		}else if (strcmp(argv[i],"--plain")==0){
-			plainSubsFilename=argv[++i];
-		}else if (strcmp(argv[i],"--readonly")==0){
-			_doWriteSrt=0;
-			printf("Will not write srt\n");
-		}
-	}
-	if (!(plainSubsFilename!=NULL || _isContinue)){
-		printf("Need plain subs or continue from srt\n");
+	if (init(argc,argv,&_srtOut,&_timingsOut)) {
 		return 1;
 	}
-	if (init(argc,argv,_overrideFont)) {
-		return 1;
-	}
-
-	showMessageEasy("Loading audio...");
-	
-	// init audio
-	SNDFILE* infile = NULL;
-	SF_INFO	_audioInfo;
-	memset (&_audioInfo, 0, sizeof (_audioInfo));
-	if ((infile = sf_open (_soundIn, SFM_READ, &_audioInfo)) == NULL) {
-		printf ("Not able to open input file %s.\n", _soundIn);
-		printf("%s\n",sf_strerror (NULL));
-		return 1;
-	}
-	totalSamples=_audioInfo.frames;
-	sampleRate=_audioInfo.samplerate;
-	totalChannels=_audioInfo.channels;
-	// info
-	printf("# Converted from file %s.\n", _soundIn);
-	printf("# Channels %d, Sample rate %d\n", _audioInfo.channels, _audioInfo.samplerate);
-
-	// Read entire file as pcm info big boy buffer
-	pcmData = malloc(sizeof(float*)*_audioInfo.channels);
-	for (i=0; i<_audioInfo.channels; ++i) {
-		pcmData[i] = malloc(sizeof(float)*_audioInfo.frames);
-	}
-	//
-	int _singleReadSamples = READBLOCKSIZE/_audioInfo.channels;
-	float _readBuf[_singleReadSamples*2];
-	int _wroteSamples=0;
-	int _lastReadCount;
-	while ((_lastReadCount = sf_readf_float (infile, _readBuf, _singleReadSamples)) > 0) {
-		for (i = 0; i < _lastReadCount; i++) {
-			int j;
-			for (j = 0; j < _audioInfo.channels; j++) {
-				pcmData[j][_wroteSamples] = _readBuf[i*_audioInfo.channels+j];
-			}
-			++_wroteSamples;
-		}
-	}
-	sf_close (infile);
-
-	// init
-	SDL_AudioSpec wav_spec; // the specs of our piece of music
-	wav_spec.freq = _audioInfo.samplerate;
-	wav_spec.format = AUDIO_F32LSB;
-	wav_spec.channels = _audioInfo.channels;
-	wav_spec.samples = PLAY_SAMPLES;
-	wav_spec.callback = my_audio_callback;
-	wav_spec.userdata = &_audioInfo;
-	int _gottenAudioId = SDL_OpenAudio(&wav_spec, NULL);
-	if ( _gottenAudioId < 0 ) {
-		printf("Couldn't open audio: %s\n", SDL_GetError());
-		return 1;
-	}
-
-	if (_isContinue){
-		printf("Continue from srt\n");
-		// init sentences and raw subs from srt
-		loadSrt(_srtOut);
-		rawSkipped = calloc(1,sizeof(char)*numRawSubs);
-	}else{
-		loadRawsubs(plainSubsFilename);
-		timings = findSentences(0,3);
-		if (timings==NULL){
-			printf("Failed to find sentences.\n");
-			exit(1);
-		}
+	if (_srtOut==NULL && _timingsOut==NULL){
+		printf("Warning: It is highly recommended you supply both --srtOut and --timingsOut\n");
 	}
 
 	unpauseMusic();
-
 	/////////////////////////////
-
 	char _modDown=0;
 	char _running=1;
 	while(_running) {
@@ -1222,7 +1280,6 @@ int main (int argc, char** argv) {
 		SDL_GetWindowSize(mainWindow,&_maxWidth,&_maxHeight);
 		SDL_RenderClear(mainWindowRenderer);
 
-		
 		drawSentences(_maxWidth,_currentSample);
 
 		// Draw indicator traingle
@@ -1266,35 +1323,12 @@ int main (int argc, char** argv) {
 		SDL_RenderPresent(mainWindowRenderer);
 	}
 
-	if (_doWriteSrt){
-		printf("Writing srt...\n");
-		FILE* _outfp = fopen(_srtOut,"wb");
-		struct nList* _current = timings;
-		int _currentIndex=1;
-		for (i=0;i<numRawSubs;++i){
-			if (!rawSkipped[i]){
-				double _startTime;
-				double _endTime;
-				if (_current==NULL){ // If we're out of sentences, write -1 as an indication of that
-					//printf("Unexpected end of sentences. Was on raw sub number %d\n",i);
-					_startTime=-1;
-					_endTime=-1;
-				}else{
-					_startTime = samplesToTime(CASTDATA(_current)->startSample);
-					_endTime = samplesToTime(CASTDATA(_current)->endSample);
-					_current = _current->nextEntry;
-				}
-				writeSingleSrt(_currentIndex++,_startTime,_endTime,rawSubs[i],_outfp);
-			}
-		}
-		fclose(_outfp);
-	}
-
+	// Save srt and timings if requested
+	saveData(_srtOut,_timingsOut);
 
 	// whatever the opposite of init is
 	FC_FreeFont(goodFont);
 	pauseMusic();
 	pthread_mutex_destroy(&audioPosLock);
-
 	return 0;
 }
