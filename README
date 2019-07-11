@@ -37,7 +37,7 @@ q		- Seek to the start of the previous sentence
 w		- Seek to the start of the next sentence
 `		- Seek to the start of the current sentence
 d		- Delete the current subtitle
-c		- Chop the current chunk at the current position
+c		- Chop the current chunk at the current position into two pieces
 space	- pause/play
 escape	- print current timestamp to history
 x		- delete current sentence
