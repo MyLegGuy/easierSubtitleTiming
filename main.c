@@ -142,6 +142,7 @@ char* plainSubsFilename; // For reloading
 
 char* timingsOut=NULL;
 char* srtOut=NULL;
+char* plainOut=NULL;
 
 int totalKeysBound=0;
 SDL_Keycode* boundKeys;
@@ -153,6 +154,18 @@ char** actionHistory=NULL;
 struct nList* lastActionMessages=NULL;
 int addingSubIndex=-1;
 
+void clearUndo(){
+	int _cachedLen = sizeStack(undoStack);
+	int i;
+	for (i=0;i<_cachedLen;++i){
+		struct undo* _undoAction = popStack(&undoStack);
+		if (_undoAction->freeMessage){
+			free(_undoAction->message);
+		}
+		free(_undoAction->passData);
+		free(_undoAction);
+	}
+}
 // Write in little endian
 size_t goodWriteu64(FILE* fp, uint64_t _writeThis){
 	uint64_t _converted = htole64(_writeThis);
@@ -721,7 +734,7 @@ void keyUndo(long _currentSample){
 		strcat(_stitchedMessage,"]");
 		setLastAction(_stitchedMessage);
 		free(_stitchedMessage);
-	
+
 		if (_undoAction->freeMessage){
 			free(_undoAction->message);
 		}
@@ -896,13 +909,19 @@ void keyEndSub(long _currentSample){
 	setLastAction("End sub");
 }
 void keyReloadPlain(long _currentSample){
-	int i;
-	for (i=0;i<numRawSubs;++i){
-		free(rawSubs[i]);
+	if (plainSubsFilename!=NULL){
+		int i;
+		for (i=0;i<numRawSubs;++i){
+			free(rawSubs[i]);
+		}
+		free(rawSubs);
+		rawSubs=NULL;
+		loadRawsubs(plainSubsFilename);
+		clearUndo();
+		setLastAction("Reload plain subs");
+	}else{
+		setLastAction("Not started with --plain, can't reload subs.");
 	}
-	free(rawSubs);
-	rawSubs=NULL;
-	loadRawsubs(plainSubsFilename);
 }
 void keySave(long _currentSample){
 	setLastAction("Save");
@@ -1038,6 +1057,17 @@ void saveData(){
 		}
 		fclose(_outfp);
 	}
+	if (plainOut!=NULL){
+		printf("Writing plain to %s\n",plainOut);
+		FILE* fp = fopen(plainOut,"w");
+		char _newLine='\n';
+		int i;
+		for (i=0;i<numRawSubs;++i){
+			fwrite(rawSubs[i],1,strlen(rawSubs[i]),fp);
+			fwrite(&_newLine,sizeof(char),1,fp);
+		}
+		fclose(fp);
+	}
 }
 char init(int argc, char** argv){
 	if (pthread_mutex_init(&audioPosLock,NULL)!=0) { // TODO - Replace this with SDL mutex?
@@ -1102,6 +1132,10 @@ char init(int argc, char** argv){
 			srtOut=argv[++i];
 		}else if (strcmp(argv[i],"--timingsOut")==0){
 			timingsOut=argv[++i];
+		}else if (strcmp(argv[i],"--plainOut")==0){
+			plainOut = argv[++i];
+		}else{
+			printf("Invalid argument %s\n",argv[++i]);
 		}
 	}
 	if (!_plainsubsLoaded){
@@ -1200,23 +1234,25 @@ int main (int argc, char** argv) {
 	if (argc<2){
 		printf("Usage:\n");
 		printf("%s <sound in>\n",argv[0]);
-		printf("Stuff you can append to the end:\n"
-			   "--font <ttf filename>\n"
+		printf("Options:\n"
+			   "--font <ttf filename>\n\n"
+			   
 			   "--timeIn <raw timings in>\n\t[timing src] Load all raw timings from this file.\n"
 			   "--plain <plain sub file>\n\t[sub src] Read plain text subs from this file line by line.\n"
-			   "--srtIn <srt path>\n\t[sub src][timing src] Loads timings and plain subs from an srt. Does not include timings that didn't have a sub to go with, therefor this is not suitable for continuing work.\n"
+			   "--srtIn <srt path>\n\t[sub src][timing src] Loads timings and plain subs from an srt. Does not include timings that didn't have a sub to go with, therefor this is not suitable for continuing work.\n\n"
 
 			   "--srtOut <srt path>\n\tPath to write the final srt product. Not a substitute for --timingsOut\n"
 			   "--timingsOut <raw timings out>\n\tPath to file where all raw timings will be saved. If you want to continue work later, load this file along with plain subs.\n"
+			   "--plainOut <plain subs out>\n\tPath where the plain subs will be saved. It will account for any subs you've skipped/deleted. \n\n"
 
-			   "\nYou most supply exactly one [sub src].\nIf you don't supply one [timing src], new timings will be generated for you.\nIt is highly recommended you supply both --timingsOut and --srtOut.\n");
+			   "\nYou most supply exactly one [sub src].\nIf you don't supply one [timing src], new timings will be generated for you.\nIt is highly recommended you supply --timingsOut, --srtOut, and --plainOut so you can continue work later.\n");
 		return 1;
 	}
 	if (init(argc,argv)) {
 		return 1;
 	}
-	if (srtOut==NULL && timingsOut==NULL){
-		printf("Warning: It is highly recommended you supply both --srtOut and --timingsOut\n");
+	if (srtOut==NULL || timingsOut==NULL || plainOut==NULL){
+		printf("Warning: It is highly recommended you supply --srtOut, --timingsOut, and --plainOut\n");
 	}
 
 	unpauseMusic();
