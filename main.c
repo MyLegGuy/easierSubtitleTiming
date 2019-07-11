@@ -27,7 +27,16 @@
 
 #include "goodLinkedList.h"
 #include "stack.h"
+#include "config.h"
 
+#define MAKERGBA(r,g,b,a) ((((a)&0xFF)<<24) | (((b)&0xFF)<<16) | (((g)&0xFF)<<8) | (((r)&0xFF)<<0))
+
+#define BOTTOMINFOLINES 1
+
+#define PLAY_SAMPLES  4096
+#define READBLOCKSIZE 8192
+
+#define CASTDATA(a) ((struct sentence*)(a->data))
 
 // Valid options: 10, 20, 30
 #define FVAD_TIME_INPUT 10
@@ -41,51 +50,10 @@
 // 
 #define FVAD_USE_GREATER_CHANNEL 0
 
-// when looking for default font. Must end in a slash
-#define DEFAULTFONTDIR "/usr/share/fonts/TTF/"
-#define GETFONTCOMMAND "fc-match"
 // Defined for the srt file format
 #define SUBFORMATSTRING "%d\n%s --> %s\n%s\n\n"
 #define SRTTIMEFORMAT "%02d:%02d:%02d,%03d"
 #define READSRTFORMAT "%d\n"SRTTIMEFORMAT" --> "SRTTIMEFORMAT"\n" // For reading srt. does not read actual sub, does that manually
-
-#define MAKERGBA(r,g,b,a) ((((a)&0xFF)<<24) | (((b)&0xFF)<<16) | (((g)&0xFF)<<8) | (((r)&0xFF)<<0))
-#define PLAY_SAMPLES  4096
-#define READBLOCKSIZE 8192
-// in milliseconds
-#define SENTENCE_SPACE_TIME 400
-#define MIN_SENTENCE_TIME SENTENCE_SPACE_TIME
-#define REDRAWTIME 40
-#define NORMALSEEK 1000
-#define MEGASEEK 3000
-#define MINISEEK 500
-#define REACTSEEK 400
-
-#define BARHEIGHT 32
-#define CASTDATA(a) ((struct sentence*)(a->data))
-#define MODKEY SDLK_LSHIFT
-#define INDICATORWIDTH 18
-#define FONTSIZE 20
-#define TIMEPERPIXEL 25
-#define INDENTPIXELS 32
-#define CROSSOUTHDENOM 10
-#define EXPLICITCHOPW 3
-#define BOTTOMINFOLINES 1
-#define TIMEFORMAT "%02d:%02d,%03d"
-#define TIMEARGS(a) (int)(a/60000) ,(int)((a%60000)/1000),(int)(a%1000)
-
-// colors
-#define BACKGROUNDCOLOR MAKERGBA(0,0,0,255)
-#define MODBACKGROUNDCOLOR MAKERGBA(0,0,57,255)
-#define MARKERCOLOR MAKERGBA(0,255,0,255)
-#define PAUSEDMARKERCOLOR MAKERGBA(150,150,150,255);
-#define COLORINACTIVESENTENCE MAKERGBA(255,255,255,255)
-#define COLORCURRENTSENTENCE MAKERGBA(255,0,0,255)
-#define COLORNOSENTENCE BACKGROUNDCOLOR
-#define ACTIVESUBCOLOR FC_MakeColor(0,255,0,255)
-#define CROSSOUTCOLOR MAKERGBA(255,0,0,255) // The line that goes though skipped subs
-#define EXPLICITCHOPCOLOR MAKERGBA(195,110,0,255)
-#define ACTIONHISTORYCOLOR FC_MakeColor(150,150,150,255)
 
 typedef void(*keyFunc)(long _currentSample);
 typedef void(*undoFunc)(long _currentSample, void* _data);
@@ -1192,7 +1160,7 @@ char init(int argc, char** argv){
 	
 	// Keep this after font and song loading so it shows the loading message
 	if (!_timingsLoaded){
-		if ((timings = findSentences(0,3))==NULL){
+		if ((timings = findSentences(0,DEFAULTVADMODE))==NULL){
 			printf("Failed to find sentences\n");
 			return 1;
 		}

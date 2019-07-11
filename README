@@ -1,0 +1,81 @@
+Slightly less minimalist subtitle timing software for audio for GNU+Linux.
+
+About
+-----
+Software for timing subtitles for audio.
+First, it reads a list of plaintext subtitles from a file. Each sentence on its own line.
+Second, it uses voice activity detection to identify a bunch of chunks where voices are active.
+The goal from here is for the user to match the subs to the chunks of audio.
+Each chunk will have a sub to go with it.
+The user will delete, merge, and create new chunks until everything is happy.
+At the end, an srt is made.
+
+Compile
+-------
+If you're not on Linux, you'll need to do a little bit of hacking to get the endian conversion functions. A drop in replacement would be:
+https://gist.github.com/panzi/6856583
+Dependencies:
+	SDL2
+	SDL2_ttf
+	SDL_FontCache (https://github.com/grimfang4/SDL_FontCache)
+	libsndfile
+	libsamplerate
+	libfvad (https://github.com/dpirch/libfvad)
+make
+
+Default Keystrokes
+------------------
+(Note - The "current chunk" will refer to the chunk that's in red or the last one you passed.)
+mod=LShift
+
+s		- Stitch the current chunk and the next one together.
+a		- Stitch the current chunk and the one before it together.
+e		- Undo
+1		- Seek back NORMALSEEK
+2		- Seek forward NORMALSEEK
+q		- Seek to the start of the previous sentence
+w		- Seek to the start of the next sentence
+`		- Seek to the start of the current sentence
+d		- Delete the current subtitle
+c		- Chop the current chunk at the current position
+space	- pause/play
+escape	- print current timestamp to history
+x		- delete current sentence
+r		- Recalculate sentences starting from current position. Dangerous. 
+
+mod+F1	- Save. Your data will also save on exit without prompt.
+mod+F5	- Reload the plaintext subtitles. (Careful - See a note later down in this document)
+
+mod+1	- Seek back MEGASEEK milliseconds
+mod+2	- Seek forward MEGASEEK milliseconds
+mod+a	- Start making a new chunk
+mod+s	- Finish this chunk
+mod+d	- Start making a new chunk starting REACTSEEK milliseconds ago. Press this when you hear a new sentence start to account for reaction time. 
+
+
+Customization
+-------------
+See config.h
+To change keybinds, search main.c for a big block of "bindKey".
+
+Note about reloading plain subs
+-------------------------------
+This only works if you start the program with --plain.
+This will reset your undo history.
+This will also reset which subs you've skipped/deleted.
+	 How to avoid this problem:
+	 Step 1 - Start the program with --plainOut argument so you can save your plain text subs
+	 Step 2 - Wait until you see an edit in the plain subs you need to make
+	 Step 3 - Save using the keystroke
+	 Step 4 - Find the exported plain subs at the path specified by --plainOut
+	 Step 5 - Edit those subs
+	 Step 6 - Copy that sub file to the sub input file specified by --plain
+	 Step 7 - Press the reload plain subs hotkey
+
+Note about memory usage
+-----------------------
+Currently loads all audio data at once into buffer to keep things simple.
+Ram usage in mb for an hour of audio could be calculated with (<sample rate>*<channels>*60*60*sizeof(float))/1000/1000
+So an hour of a regular audio file might take 1.2 gb of ram. That assumes two channels, so there'd be two 600 mb buffers.
+
+
