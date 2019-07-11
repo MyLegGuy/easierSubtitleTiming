@@ -112,6 +112,7 @@ struct sentence {
 //
 void undoStitch(long _currentSample, void* _passedData);
 void loadRawsubs(const char* _filename);
+void saveData();
 //
 
 SDL_Window* mainWindow;
@@ -138,6 +139,9 @@ int numRawSubs=0;
 char** rawSubs;
 char* rawSkipped;
 char* plainSubsFilename; // For reloading
+
+char* timingsOut=NULL;
+char* srtOut=NULL;
 
 int totalKeysBound=0;
 SDL_Keycode* boundKeys;
@@ -889,6 +893,7 @@ void keyReactAddSub(long _currentSample){
 }
 void keyEndSub(long _currentSample){
 	addingSubIndex=-1;
+	setLastAction("End sub");
 }
 void keyReloadPlain(long _currentSample){
 	int i;
@@ -899,7 +904,9 @@ void keyReloadPlain(long _currentSample){
 	rawSubs=NULL;
 	loadRawsubs(plainSubsFilename);
 }
-void keySave(){
+void keySave(long _currentSample){
+	setLastAction("Save");
+	saveData();
 }
 /////////////////////////////
 char* getFontFilename(){
@@ -1004,10 +1011,10 @@ void loadTimings(const char* _filename){
 	fclose(fp);
 	endSpeedyAddnList(_listAdder);
 }
-void saveData(const char* _srtOut, const char* _timingsOut){
-	if (_timingsOut!=NULL){
-		printf("Writing timings to %s\n",_timingsOut);
-		FILE* fp = fopen(_timingsOut,"wb");
+void saveData(){
+	if (timingsOut!=NULL){
+		printf("Writing timings to %s\n",timingsOut);
+		FILE* fp = fopen(timingsOut,"wb");
 		goodWriteu64(fp,nListLen(timings));
 		ITERATENLIST(timings,{
 				goodWriteu64(fp,CASTDATA(_curnList)->startSample);
@@ -1015,9 +1022,9 @@ void saveData(const char* _srtOut, const char* _timingsOut){
 			});
 		fclose(fp);
 	}
-	if (_srtOut!=NULL){
-		printf("Writing srt to %s\n",_srtOut);
-		FILE* _outfp = fopen(_srtOut,"wb");
+	if (srtOut!=NULL){
+		printf("Writing srt to %s\n",srtOut);
+		FILE* _outfp = fopen(srtOut,"wb");
 		struct nList* _curTiming = timings;
 		int _currentIndex=1;
 		int i;
@@ -1032,9 +1039,7 @@ void saveData(const char* _srtOut, const char* _timingsOut){
 		fclose(_outfp);
 	}
 }
-char init(int argc, char** argv, char** _srtOutFilename, char** _timingsOutFilename) {
-	*_srtOutFilename=NULL;
-	*_timingsOutFilename=NULL;
+char init(int argc, char** argv){
 	if (pthread_mutex_init(&audioPosLock,NULL)!=0) { // TODO - Replace this with SDL mutex?
 		printf("mutex init failed");
 		return 1;
@@ -1094,9 +1099,9 @@ char init(int argc, char** argv, char** _srtOutFilename, char** _timingsOutFilen
 				printf("Timings or plain already loaded (--srtIn)\n");
 			}
 		}else if (strcmp(argv[i],"--srtOut")==0){
-			*_srtOutFilename=argv[++i];
+			srtOut=argv[++i];
 		}else if (strcmp(argv[i],"--timingsOut")==0){
-			*_timingsOutFilename=argv[++i];
+			timingsOut=argv[++i];
 		}
 	}
 	if (!_plainsubsLoaded){
@@ -1203,16 +1208,14 @@ int main (int argc, char** argv) {
 
 			   "--srtOut <srt path>\n\tPath to write the final srt product. Not a substitute for --timingsOut\n"
 			   "--timingsOut <raw timings out>\n\tPath to file where all raw timings will be saved. If you want to continue work later, load this file along with plain subs.\n"
-			   
+
 			   "\nYou most supply exactly one [sub src].\nIf you don't supply one [timing src], new timings will be generated for you.\nIt is highly recommended you supply both --timingsOut and --srtOut.\n");
 		return 1;
 	}
-	char* _timingsOut=NULL;
-	char* _srtOut=NULL;
-	if (init(argc,argv,&_srtOut,&_timingsOut)) {
+	if (init(argc,argv)) {
 		return 1;
 	}
-	if (_srtOut==NULL && _timingsOut==NULL){
+	if (srtOut==NULL && timingsOut==NULL){
 		printf("Warning: It is highly recommended you supply both --srtOut and --timingsOut\n");
 	}
 
@@ -1324,7 +1327,7 @@ int main (int argc, char** argv) {
 	}
 
 	// Save srt and timings if requested
-	saveData(_srtOut,_timingsOut);
+	saveData();
 
 	// whatever the opposite of init is
 	FC_FreeFont(goodFont);
