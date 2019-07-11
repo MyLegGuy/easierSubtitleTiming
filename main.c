@@ -1,11 +1,3 @@
-/*
-	UIdeas - 
-	Q - Rewind
-	W - Forward
-	S - stitch - Combine this and next one
-	A - stitch this and previous one
-*/
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -861,18 +853,23 @@ void keyAddSub(long _currentSample){
 		_prevList=_curnList;
 		++i;
 	});
-	struct nList* _tempHold = _prevList->nextEntry;
-	_prevList->nextEntry = _newEntry;
-	_newEntry->nextEntry = _tempHold;
-
+	if (_prevList!=NULL){
+		struct nList* _tempHold = _prevList->nextEntry;
+		_prevList->nextEntry = _newEntry;
+		_newEntry->nextEntry = _tempHold;
+	}else{
+		struct nList* _tempHold = timings;
+		timings=_newEntry;
+		_newEntry->nextEntry=_tempHold;
+	}
 	addingSubIndex = i;
 	setLastAction("Adding sub");
-
 }
 void keyReactAddSub(long _currentSample){
 	keyAddSub(_currentSample-timeToSamples(REACTSEEK));
 }
 void keyEndSub(long _currentSample){
+	// Simply stops changing the endpoint
 	addingSubIndex=-1;
 	setLastAction("End sub");
 }
@@ -1073,12 +1070,12 @@ char init(int argc, char** argv){
 		if (strcmp(argv[i],"--font")==0){
 			FC_LoadFont(goodFont, mainWindowRenderer, argv[++i], FONTSIZE, FC_MakeColor(255,255,255,255), TTF_STYLE_NORMAL);
 			_fontLoaded=1;
-		}else if (strcmp(argv[i],"--timeIn")==0){
+		}else if (strcmp(argv[i],"--timingsIn")==0){
 			if (!_timingsLoaded){
 				_timingsLoaded=1;
 				loadTimings(argv[++i]);
 			}else{
-				printf("Too many timings loaders (--timeIn)\n");
+				printf("Too many timings loaders (--timingsIn)\n");
 			}
 		}else if (strcmp(argv[i],"--plain")==0){
 			if (!_plainsubsLoaded){
@@ -1103,7 +1100,7 @@ char init(int argc, char** argv){
 		}else if (strcmp(argv[i],"--plainOut")==0){
 			plainOut = argv[++i];
 		}else{
-			printf("Invalid argument %s\n",argv[++i]);
+			printf("Invalid argument %s\n",argv[i]);
 		}
 	}
 	if (!_plainsubsLoaded){
@@ -1205,7 +1202,7 @@ int main (int argc, char** argv) {
 		printf("Options:\n"
 			   "--font <ttf filename>\n\n"
 			   
-			   "--timeIn <raw timings in>\n\t[timing src] Load all raw timings from this file.\n"
+			   "--timingsIn <raw timings in>\n\t[timing src] Load all raw timings from this file.\n"
 			   "--plain <plain sub file>\n\t[sub src] Read plain text subs from this file line by line.\n"
 			   "--srtIn <srt path>\n\t[sub src][timing src] Loads timings and plain subs from an srt. Does not include timings that didn't have a sub to go with, therefor this is not suitable for continuing work.\n\n"
 

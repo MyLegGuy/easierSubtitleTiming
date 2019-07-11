@@ -23,6 +23,11 @@ Dependencies:
 	libfvad (https://github.com/dpirch/libfvad)
 make
 
+Usage
+-----
+See the "about" section for the concept.
+Run without arguments to see command line arguments.
+
 Default Keystrokes
 ------------------
 (Note - The "current chunk" will refer to the chunk that's in red or the last one you passed.)
@@ -43,7 +48,7 @@ escape	- print current timestamp to history
 x		- delete current sentence
 r		- Recalculate sentences starting from current position. Dangerous. 
 
-mod+F1	- Save. Your data will also save on exit without prompt.
+mod+F1	- Explicit save. Your data will also save on exit without prompt.
 mod+F5	- Reload the plaintext subtitles. (Careful - See a note later down in this document)
 
 mod+1	- Seek back MEGASEEK milliseconds
@@ -57,6 +62,13 @@ Customization
 -------------
 See config.h
 To change keybinds, search main.c for a big block of "bindKey".
+
+Continuing Work
+---------------
+To allow continuing working later, make sure you use the --srtOut, --timingsOut, and --plainOut options.
+These will create files you should use as input next time.
+Currently, your position is always lost when you exit.
+Just write your position down before you quit. It's displayed in the bottom left at all times.
 
 Note about reloading plain subs
 -------------------------------
@@ -77,5 +89,3 @@ Note about memory usage
 Currently loads all audio data at once into buffer to keep things simple.
 Ram usage in mb for an hour of audio could be calculated with (<sample rate>*<channels>*60*60*sizeof(float))/1000/1000
 So an hour of a regular audio file might take 1.2 gb of ram. That assumes two channels, so there'd be two 600 mb buffers.
-
-
