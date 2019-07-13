@@ -32,6 +32,7 @@ Default Keystrokes
 ------------------
 (Note - The "current chunk" will refer to the chunk that's in red or the last one you passed.)
 mod=LShift
+mod2=LAlt
 
 s		- Stitch the current chunk and the next one together.
 a		- Stitch the current chunk and the one before it together.
@@ -58,6 +59,7 @@ mod+a	- Start making a new chunk
 mod+s	- Finish this chunk
 mod+d	- Start making a new chunk starting REACTSEEK milliseconds ago. Press this when you hear a new sentence start to account for reaction time. 
 
+mod2+anything - Do any keystroke as if you pressed it REACTSEEK milliseconds ago. 
 
 Customization
 -------------

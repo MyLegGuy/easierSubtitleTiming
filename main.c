@@ -1339,6 +1339,7 @@ int main(int argc, char** argv){
 	unpauseMusic();
 	/////////////////////////////
 	char _running=1;
+	char _modTwoDown=0;
 	while(_running) {
 		long _currentSample = getCurrentSample();
 		SDL_Event e;
@@ -1348,11 +1349,13 @@ int main(int argc, char** argv){
 			} else if( e.type == SDL_KEYDOWN) {
 				if (e.key.keysym.sym==MODKEY){
 					modDown=1;
+				}else if (e.key.keysym.sym==MODKEY2){
+					_modTwoDown=1;
 				}else{
 					int i;
 					for (i=0;i<totalKeysBound;++i){
 						if (e.key.keysym.sym==boundKeys[i] && boundKeyModStatus[i]==modDown){
-							boundFuncs[i](_currentSample);
+							boundFuncs[i](_modTwoDown ? _currentSample-timeToSamples(REACTSEEK) : _currentSample);
 							break;
 						}
 					}
@@ -1363,6 +1366,8 @@ int main(int argc, char** argv){
 			}else if (e.type==SDL_KEYUP){
 				if (e.key.keysym.sym==MODKEY){
 					modDown=0;
+				}else if (e.key.keysym.sym==MODKEY2){
+					_modTwoDown=0;
 				}
 			}else if (e.window.event==SDL_WINDOWEVENT_RESIZED){
 				if (sizeActionHistory!=0 && _currentSample>100){
@@ -1388,7 +1393,13 @@ int main(int argc, char** argv){
 			}
 		}
 
-		if (modDown){
+		if (_modTwoDown){
+			if (modDown){
+				setDrawColor(MODBACKGROUNDCOLOR | MODTWOBACKGROUNDCOLOR);
+			}else{
+				setDrawColor(MODTWOBACKGROUNDCOLOR);
+			}
+		}else if (modDown){
 			setDrawColor(MODBACKGROUNDCOLOR);
 		}else{
 			setDrawColor(BACKGROUNDCOLOR);
