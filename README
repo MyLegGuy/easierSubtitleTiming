@@ -50,6 +50,7 @@ r		- Recalculate sentences starting from current position. Dangerous.
 
 mod+F1	- Explicit save. Your data will also save on exit without prompt.
 mod+F5	- Reload the plaintext subtitles. (Careful - See a note later down in this document)
+mod+F6	- Replace timings. See ("Tip - Replace Timings")
 
 mod+1	- Seek back MEGASEEK milliseconds
 mod+2	- Seek forward MEGASEEK milliseconds
@@ -89,3 +90,9 @@ Note about memory usage
 Currently loads all audio data at once into buffer to keep things simple.
 Ram usage in mb for an hour of audio could be calculated with (<sample rate>*<channels>*60*60*sizeof(float))/1000/1000
 So an hour of a regular audio file might take 1.2 gb of ram. That assumes two channels, so there'd be two 600 mb buffers.
+
+Tip - Replace Timings
+---------------------
+Allows you to get rid of all chunks/timings after where you are right now and replace them with the timings from another file.
+Only the timings from the new file past the sample position you're at right now will be loaded.
+	 If the other timings file is for audio with a different sample rate, timings will be messed up.

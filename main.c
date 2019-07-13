@@ -1,3 +1,6 @@
+/*
+TODO - Save timings using time instead of sample count? Allows things to work even if you change the sample rate, like if the user converts the file. Con is precision.
+*/
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -73,6 +76,7 @@ struct sentence {
 void undoStitch(long _currentSample, void* _passedData);
 void loadRawsubs(const char* _filename);
 void saveData();
+struct nList* loadTimings(const char* _filename);
 //
 
 SDL_Window* mainWindow;
@@ -114,6 +118,71 @@ char** actionHistory=NULL;
 struct nList* lastActionMessages=NULL;
 int addingSubIndex=-1;
 
+char modDown=0;
+
+char* getTextInput(char* _passedPrompt){
+	modDown=0;
+	int _retSize=10;
+	char* _ret=malloc(10);
+	_ret[0]='\0';
+	char _done=0;
+	SDL_SetRenderDrawColor(mainWindowRenderer,0,0,0,255);
+	SDL_StartTextInput();
+	while(!_done){
+		SDL_Event event;
+		if (!_done && SDL_PollEvent(&event)) {
+            switch (event.type) {
+				case SDL_KEYDOWN:
+					if (event.key.keysym.sym==SDLK_F1){
+						if (SDL_HasClipboardText()){
+							char* _clipStuff = SDL_GetClipboardText();
+							if (_clipStuff!=NULL){
+								_ret = realloc(_ret,strlen(_ret)+strlen(_clipStuff));
+								strcat(_ret,_clipStuff);
+							}
+							free(_clipStuff);
+						}
+					}else if (event.key.keysym.sym==SDLK_BACKSPACE){
+						int _cachedStrlen = strlen(_ret);
+						if (_cachedStrlen>0){
+							_ret[_cachedStrlen-1]='\0';
+						}
+					}else if (event.key.keysym.sym==SDLK_RETURN){
+						_done=1;
+					}
+					if (event.key.keysym.sym!=SDLK_ESCAPE){
+						break;
+					}
+					// pressing esc continues down
+				case SDL_QUIT:
+					free(_ret);
+					_ret=NULL;
+					_done=1;
+                    break;
+                case SDL_TEXTINPUT:
+					;
+					int _destLen = strlen(_ret)+strlen(event.text.text);
+					while (_destLen>=_retSize){
+						_retSize*=2;
+					}
+					_ret = realloc(_ret,_retSize);
+                    strcat(_ret, event.text.text);
+                    break;
+            }
+        }
+		SDL_RenderClear(mainWindowRenderer);
+		FC_Draw(goodFont,mainWindowRenderer,0,0,"Esc - Cancel; Return - Confirm; F1 - Paste");
+		FC_Draw(goodFont,mainWindowRenderer,0,fontHeight,_passedPrompt);
+		FC_Draw(goodFont,mainWindowRenderer,0,fontHeight*3,_ret);
+		SDL_RenderPresent(mainWindowRenderer);
+	}
+	SDL_StopTextInput();
+	if (_ret!=NULL && _ret[0]=='\0'){
+		free(_ret);
+		return NULL;
+	}
+	return _ret;
+}
 void clearUndo(){
 	int _cachedLen = sizeStack(undoStack);
 	int i;
@@ -137,11 +206,28 @@ size_t goodReadu64(FILE* fp){
 	fread(&_read,sizeof(uint64_t),1,fp);
 	return le64toh(_read);
 }
-void showMessageEasy(const char* _passedMessage){
+void quickShowMessage(const char* _passedMessage){
 	SDL_SetRenderDrawColor(mainWindowRenderer,0,0,0,255);
 	SDL_RenderClear(mainWindowRenderer);
 	FC_Draw(goodFont,mainWindowRenderer,0,0,_passedMessage);
 	SDL_RenderPresent(mainWindowRenderer);
+}
+void waitShowMessage(const char* _passedMessage){
+	modDown=0;
+	while(1){
+		SDL_Event e;
+		while(SDL_PollEvent(&e)!=0){
+			if (e.type==SDL_QUIT || (e.type==SDL_KEYDOWN && e.key.keysym.sym==SDLK_ESCAPE)){
+				while(SDL_PollEvent(&e)!=0);
+				return;
+			}
+		}
+		SDL_SetRenderDrawColor(mainWindowRenderer,0,0,0,255);
+		SDL_RenderClear(mainWindowRenderer);
+		FC_Draw(goodFont,mainWindowRenderer,0,0,"Press ESC to continue");
+		FC_Draw(goodFont,mainWindowRenderer,0,fontHeight*2,_passedMessage);
+		SDL_RenderPresent(mainWindowRenderer);
+	}
 }
 void seekPast(FILE* fp, unsigned char _target){
 	while (1){
@@ -300,7 +386,7 @@ double getAvgPcmVol(long _sampleNumber) {
 	return _avg/totalChannels;
 }
 struct nList* findSentences(long _startSample, int _passedMode) {
-	showMessageEasy("Finding sentences...");
+	quickShowMessage("Finding sentences...");
 	struct nList* _ret=NULL;
 
 	Fvad* _voiceState = fvad_new();
@@ -801,6 +887,7 @@ void keyDeleteSentence(long _currentSample){
 	setLastAction("Del sentence");
 }
 void keyRecalculateSentences(long _currentSample){
+	modDown=0;
 	struct nList* _currentSentence = getBeforeCurrentSentence(_currentSample,NULL);
 	if (_currentSentence!=NULL && _currentSentence->nextEntry!=NULL){
 		pauseMusic();
@@ -828,7 +915,7 @@ void keyRecalculateSentences(long _currentSample){
 					}
 				}
 			}
-			showMessageEasy("vad mode:\n0 (\"quality\"),\n1 (\"low bitrate\"),\n2 (\"aggressive\"),\n3 (\"very aggressive\")\n<esc> (\"cancel\")");
+			quickShowMessage("vad mode:\n0 (\"quality\"),\n1 (\"low bitrate\"),\n2 (\"aggressive\"),\n3 (\"very aggressive\")\n<esc> (\"cancel\")");
 		}
 		if (_inputResult!=-2){
 			freenList(_currentSentence->nextEntry, 1);
@@ -885,12 +972,38 @@ void keyReloadPlain(long _currentSample){
 		clearUndo();
 		setLastAction("Reload plain subs");
 	}else{
-		setLastAction("Not started with --plain, can't reload subs.");
+		setLastAction("Not started with --plainIn, can't reload subs.");
 	}
 }
 void keySave(long _currentSample){
 	setLastAction("Save");
 	saveData();
+}
+void keyReplaceTiming(long _currentSample){
+	pauseMusic();
+	char* _newFilename = getTextInput("Timing replace filename:");
+	if (_newFilename==NULL){
+		return;
+	}
+	if (!fileExists(_newFilename)){
+		waitShowMessage("File does not exist.");
+	}
+	struct nList* _currentEntry = getCurrentSentence(_currentSample,NULL);
+	if (_currentEntry->nextEntry!=NULL){
+		freenList(_currentEntry->nextEntry,1);
+		_currentEntry->nextEntry=NULL;
+	}
+	struct nList* _newTimings = loadTimings(_newFilename);
+	ITERATENLIST(_newTimings,{
+			if (_curnList->nextEntry!=NULL && CASTDATA(_curnList->nextEntry)->startSample>=_currentSample){
+				_currentEntry->nextEntry=_curnList->nextEntry;
+				_curnList->nextEntry=NULL;
+				break;
+			}
+		});
+	freenList(_newTimings,1);
+	free(_newFilename);
+	unpauseMusic();
 }
 /////////////////////////////
 char* getFontFilename(){
@@ -980,9 +1093,9 @@ void loadSrt(const char* _filename){
 
 	fclose(fp);
 }
-void loadTimings(const char* _filename){
-	timings=NULL;
-	struct nList** _listAdder = initSpeedyAddnList(&timings);
+struct nList* loadTimings(const char* _filename){
+	struct nList* _ret=NULL;
+	struct nList** _listAdder = initSpeedyAddnList(&_ret);
 	FILE* fp = fopen(_filename,"rb");
 	long _totalSentences = goodReadu64(fp);
 	long i;
@@ -994,6 +1107,7 @@ void loadTimings(const char* _filename){
 	}
 	fclose(fp);
 	endSpeedyAddnList(_listAdder);
+	return _ret;
 }
 void saveData(){
 	if (timingsOut!=NULL){
@@ -1073,16 +1187,17 @@ char init(int argc, char** argv){
 		}else if (strcmp(argv[i],"--timingsIn")==0){
 			if (!_timingsLoaded){
 				_timingsLoaded=1;
-				loadTimings(argv[++i]);
+				timings = loadTimings(argv[++i]);
 			}else{
 				printf("Too many timings loaders (--timingsIn)\n");
 			}
-		}else if (strcmp(argv[i],"--plain")==0){
+		}else if (strcmp(argv[i],"--plainIn")==0){
 			if (!_plainsubsLoaded){
 				_plainsubsLoaded=1;
-				loadRawsubs(argv[++i]);
+				plainSubsFilename=argv[++i];
+				loadRawsubs(plainSubsFilename);
 			}else{
-				printf("Too many plain loaders (--plain)\n");
+				printf("Too many plain loaders (--plainIn)\n");
 			}
 		}else if (strcmp(argv[i],"--srtIn")==0){
 			if (!_plainsubsLoaded && !_timingsLoaded){
@@ -1107,7 +1222,7 @@ char init(int argc, char** argv){
 		printf("Need to supply a [sub src]\n");
 		return 1;
 	}
-
+	
 	// Get font filename if one wasn't passed
 	if (!_fontLoaded){
 		char* _fontFilename = getFontFilename();
@@ -1121,7 +1236,7 @@ char init(int argc, char** argv){
 	fontHeight = FC_GetLineHeight(goodFont);
 
 	// Finish reading all audio into big boy buffer
-	showMessageEasy("Loading audio...");
+	quickShowMessage("Loading audio...");
 	pcmData = malloc(sizeof(float*)*_audioInfo->channels);
 	for (i=0; i<_audioInfo->channels; ++i) {
 		pcmData[i] = malloc(sizeof(float)*_audioInfo->frames);
@@ -1186,6 +1301,7 @@ char init(int argc, char** argv){
 	bindKey(SDLK_x,keyDeleteSentence,0);
 	bindKey(SDLK_r,keyRecalculateSentences,0);
 	bindKey(SDLK_F5,keyReloadPlain,1);
+	bindKey(SDLK_F6,keyReplaceTiming,1);
 	bindKey(SDLK_F1,keySave,1);
 
 	bindKey(SDLK_a,keyAddSub,1);
@@ -1195,7 +1311,7 @@ char init(int argc, char** argv){
 	setLastAction("Welcome");
 	return 0;
 }
-int main (int argc, char** argv) {
+int main(int argc, char** argv){
 	if (argc<2){
 		printf("Usage:\n");
 		printf("%s <sound in>\n",argv[0]);
@@ -1203,7 +1319,7 @@ int main (int argc, char** argv) {
 			   "--font <ttf filename>\n\n"
 			   
 			   "--timingsIn <raw timings in>\n\t[timing src] Load all raw timings from this file.\n"
-			   "--plain <plain sub file>\n\t[sub src] Read plain text subs from this file line by line.\n"
+			   "--plainIn <plain sub file>\n\t[sub src] Read plain text subs from this file line by line.\n"
 			   "--srtIn <srt path>\n\t[sub src][timing src] Loads timings and plain subs from an srt. Does not include timings that didn't have a sub to go with, therefor this is not suitable for continuing work.\n\n"
 
 			   "--srtOut <srt path>\n\tPath to write the final srt product. Not a substitute for --timingsOut\n"
@@ -1222,7 +1338,6 @@ int main (int argc, char** argv) {
 
 	unpauseMusic();
 	/////////////////////////////
-	char _modDown=0;
 	char _running=1;
 	while(_running) {
 		long _currentSample = getCurrentSample();
@@ -1232,22 +1347,22 @@ int main (int argc, char** argv) {
 				_running=0;
 			} else if( e.type == SDL_KEYDOWN) {
 				if (e.key.keysym.sym==MODKEY){
-					_modDown=1;
+					modDown=1;
 				}else{
 					int i;
 					for (i=0;i<totalKeysBound;++i){
-						if (e.key.keysym.sym==boundKeys[i] && boundKeyModStatus[i]==_modDown){
+						if (e.key.keysym.sym==boundKeys[i] && boundKeyModStatus[i]==modDown){
 							boundFuncs[i](_currentSample);
 							break;
 						}
 					}
 					if (i==totalKeysBound){
-						printf("invalid key %s, mod:%d\n",SDL_GetKeyName(e.key.keysym.sym),_modDown);
+						printf("invalid key %s, mod:%d\n",SDL_GetKeyName(e.key.keysym.sym),modDown);
 					}
 				}
 			}else if (e.type==SDL_KEYUP){
 				if (e.key.keysym.sym==MODKEY){
-					_modDown=0;
+					modDown=0;
 				}
 			}else if (e.window.event==SDL_WINDOWEVENT_RESIZED){
 				if (sizeActionHistory!=0 && _currentSample>100){
@@ -1273,7 +1388,7 @@ int main (int argc, char** argv) {
 			}
 		}
 
-		if (_modDown){
+		if (modDown){
 			setDrawColor(MODBACKGROUNDCOLOR);
 		}else{
 			setDrawColor(BACKGROUNDCOLOR);
