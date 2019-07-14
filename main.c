@@ -727,8 +727,10 @@ void undoDeleteSentence(long _currentSample, void* _passedData){
 	}
 }
 void undoExtend(long _currentSample, void* _passedData){
-	struct nList* _currentEntry = getCurrentSentence(_currentSample,NULL);
-	CASTDATA(_currentEntry)->endSample=*((long*)_passedData);
+	CASTDATA(getCurrentSentence(_currentSample,NULL))->endSample=*((long*)_passedData);
+}
+void undoStartHere(long _currentSample, void* _passedData){
+	CASTDATA(getCurrentSentence(_currentSample,NULL))->startSample=*((long*)_passedData);
 }
 long timeToMilliseconds(int _hours, int _mins, int _secs, int _milliseconds){
 	return (_hours*3600+_mins*60+_secs)*1000+_milliseconds;
@@ -805,15 +807,21 @@ void keyMegaSeekBack(long _currentSample){
 	seekAudioMilli(MEGASEEK*-1);
 }
 void keySeekBackSentence(long _currentSample){
-	struct nList* _possibleEntry = getBeforeCurrentSentence(_currentSample,NULL);
-	if (_possibleEntry!=NULL){
-		seekAudioSamplesExact(CASTDATA(_possibleEntry)->startSample);
-	}
+	struct nList* _possiblePrev = getBeforeCurrentSentence(_currentSample,NULL);
+	if (_possiblePrev!=NULL){
+		if (_possiblePrev->nextEntry!=NULL && CASTDATA(_possiblePrev->nextEntry)->endSample<_currentSample){
+			seekAudioSamplesExact(CASTDATA(_possiblePrev->nextEntry)->startSample);
+		}else{
+			seekAudioSamplesExact(CASTDATA(_possiblePrev)->startSample);
+		}
+	}	
 }
 void keySeekForwardSentence(long _currentSample){
-	struct nList* _possibleNext = getCurrentSentence(_currentSample,NULL)->nextEntry;
-	if (_possibleNext!=NULL){
-		seekAudioSamplesExact(CASTDATA(_possibleNext)->startSample);
+	struct nList* _currentEntry = getCurrentSentence(_currentSample,NULL);
+	if (_currentSample<CASTDATA(_currentEntry)->startSample){
+		seekAudioSamplesExact(CASTDATA(_currentEntry)->startSample);
+	}else if (_currentEntry->nextEntry!=NULL){
+		seekAudioSamplesExact(CASTDATA(_currentEntry->nextEntry)->startSample);
 	}
 }
 void keySeekSentenceStart(long _currentSample){
@@ -1016,6 +1024,16 @@ void keyExtendHere(long _currentSample){
 	CASTDATA(_currentEntry)->endSample=_currentSample;
 	addStack(&undoStack,makeUndoEntry("Extend sentence",undoExtend,_dataPointer,_currentSample,0));
 	addingSubIndex=-1;
+}
+void keyStartHere(long _currentSample){
+	struct nList* _currentEntry = getCurrentSentence(_currentSample,NULL);
+	if (_currentEntry->nextEntry!=NULL){
+		long _destStart = CASTDATA(_currentEntry)->endSample<_currentSample ? _currentSample : CASTDATA(_currentEntry)->endSample+1;
+		long* _dataPointer = malloc(sizeof(long));
+		*_dataPointer=CASTDATA(_currentEntry->nextEntry)->startSample;
+		CASTDATA(_currentEntry->nextEntry)->startSample=_destStart;
+		addStack(&undoStack,makeUndoEntry("Pull sentence start",undoStartHere,_dataPointer,_destStart,0));
+	}
 }
 /////////////////////////////
 char* getFontFilename(){
@@ -1312,6 +1330,7 @@ char init(int argc, char** argv){
 	bindKey(SDLK_ESCAPE,keyPrintDivider,0);
 	bindKey(SDLK_x,keyDeleteSentence,0);
 	bindKey(SDLK_r,keyExtendHere,0);
+	bindKey(SDLK_r,keyStartHere,1);
 	
 	bindKey(SDLK_F7,keyRecalculateSentences,1);
 	bindKey(SDLK_F5,keyReloadPlain,1);
