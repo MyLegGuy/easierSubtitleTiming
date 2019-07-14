@@ -47,11 +47,12 @@ c		- Chop the current chunk at the current position into two pieces
 space	- pause/play
 escape	- print current timestamp to history
 x		- delete current sentence
-r		- Recalculate sentences starting from current position. Dangerous. 
+r		- Set current sentence's end point to here. Can also be used to extend a sentence you've passed.
 
 mod+F1	- Explicit save. Your data will also save on exit without prompt.
 mod+F5	- Reload the plaintext subtitles. (Careful - See a note later down in this document)
 mod+F6	- Replace timings. See ("Tip - Replace Timings")
+mod+F7	- Recalculate sentences starting from current position. Dangerous. 
 
 mod+1	- Seek back MEGASEEK milliseconds
 mod+2	- Seek forward MEGASEEK milliseconds

@@ -726,6 +726,10 @@ void undoDeleteSentence(long _currentSample, void* _passedData){
 		_prevList->nextEntry = _newEntry;
 	}
 }
+void undoExtend(long _currentSample, void* _passedData){
+	struct nList* _currentEntry = getCurrentSentence(_currentSample,NULL);
+	CASTDATA(_currentEntry)->endSample=*((long*)_passedData);
+}
 long timeToMilliseconds(int _hours, int _mins, int _secs, int _milliseconds){
 	return (_hours*3600+_mins*60+_secs)*1000+_milliseconds;
 }
@@ -1004,6 +1008,14 @@ void keyReplaceTiming(long _currentSample){
 	freenList(_newTimings,1);
 	free(_newFilename);
 	unpauseMusic();
+}
+void keyExtendHere(long _currentSample){
+	struct nList* _currentEntry = getCurrentSentence(_currentSample,NULL);
+	long* _dataPointer = malloc(sizeof(long));
+	*_dataPointer=CASTDATA(_currentEntry)->endSample;
+	CASTDATA(_currentEntry)->endSample=_currentSample;
+	addStack(&undoStack,makeUndoEntry("Extend sentence",undoExtend,_dataPointer,_currentSample,0));
+	addingSubIndex=-1;
 }
 /////////////////////////////
 char* getFontFilename(){
@@ -1299,7 +1311,9 @@ char init(int argc, char** argv){
 	bindKey(SDLK_SPACE,keyPause,0);
 	bindKey(SDLK_ESCAPE,keyPrintDivider,0);
 	bindKey(SDLK_x,keyDeleteSentence,0);
-	bindKey(SDLK_r,keyRecalculateSentences,0);
+	bindKey(SDLK_r,keyExtendHere,0);
+	
+	bindKey(SDLK_F7,keyRecalculateSentences,1);
 	bindKey(SDLK_F5,keyReloadPlain,1);
 	bindKey(SDLK_F6,keyReplaceTiming,1);
 	bindKey(SDLK_F1,keySave,1);
